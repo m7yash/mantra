@@ -26,12 +26,12 @@ See below for examples.
 
 ---
 
-## Quick Start
-### 1) Install Mantra from the Marketplace
+## Setup (takes <4 minutes)
+### 1) Install Mantra from the VS Code Marketplace
 
 ### 2) Provide API keys on first run
 
-- **Deepgram** — speech‑to‑text (free since you get $200 free credit and it's extremely cheap). Get it at https://deepgram.com
+- **Deepgram** — speech‑to‑text (free since you get $200 free credit and it's extremely cheap, so it'll last months). Get it at https://deepgram.com
 - **Groq** — LLM for processing user instructions (free, can use paid account for higher rate/token limits if needed). Get it at https://groq.com
 
 You’ll be prompted the first time; keys are stored in VS Code Secret Storage. You can update them later via the same prompt sequence.
@@ -78,15 +78,7 @@ Open **Settings → Extensions → Mantra** to adjust.
 - **When the LLM is used:** Mantra includes the **current file's full code** as context for the model. Mantra also provides a list of all file names to the model.
 - **Secrets & storage:** Your API keys are stored securely in VS Code **Secret Storage**. No keys are written to disk in plaintext by the extension.
 - **On‑screen content:** Transcripts and actions may appear briefly as status messages in VS Code.
-- **For more:** See Deepgram and Groq's privacy policies. Other than the Deepgram and Groq API usage, Mantra is executed locally on your computer as a VS Code extension and does not collect, save, or share any of your data.
-
----
-
-## Requirements
-
-- **VS Code 1.98+**
-- **Internet access** (Deepgram & Groq are cloud services)  
-- **Microphone permission** granted to VS Code/terminal by your OS
+- **For more:** See Deepgram and Groq's privacy policies. **Other than the Deepgram and Groq API usage, Mantra is executed locally on your computer as a VS Code extension and does not collect, save, or share any of your data.**
 
 ---
 

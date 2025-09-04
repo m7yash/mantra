@@ -373,9 +373,9 @@ export class Model {
         reject(err instanceof Error ? err : new Error(String(err)));
       };
 
-      // Read trailing silence (ms) from VS Code settings; default 300ms, clamp to >=100ms
+      // Read trailing silence (ms) from VS Code settings; default 1000ms, clamp to >=100ms
       const trailingMsCfg = Math.max(100, Number(
-        vscode.workspace.getConfiguration('mantra').get('trailingSilenceMs', 300)
+        vscode.workspace.getConfiguration('mantra').get('trailingSilenceMs', 1000)
       ));
 
       // Live STT socket options (raw 16kHz mono PCM)
