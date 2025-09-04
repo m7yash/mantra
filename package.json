@@ -1,0 +1,97 @@
+{
+  "name": "mantra",
+  "displayName": "Mantra",
+  "publisher": "mishra7yash",
+  "icon": "mantralogo.png",
+  "version": "0.1.7",
+  "description": "Control VS Code with your voice. Extremely accurate, absurdly fast.",
+  "engines": {
+    "vscode": "^1.98.0"
+  },
+  "categories": [
+    "Other",
+    "Machine Learning"
+  ],
+  "main": "./out/src/extension.js",
+  "extensionKind": [
+    "workspace"
+  ],
+  "capabilities": {
+    "untrustedWorkspaces": {
+      "supported": false,
+      "description": "Records audio and may read file contents to send to cloud services; disabled in Restricted Mode."
+    },
+    "virtualWorkspaces": false
+  },
+  "contributes": {
+    "commands": [
+      {
+        "command": "mantra.start",
+        "title": "Mantra: Start Recording"
+      },
+      {
+        "command": "mantra.pause",
+        "title": "Mantra: Pause Listening"
+      },
+      {
+        "command": "mantra.resume",
+        "title": "Mantra: Resume Listening"
+      },
+      {
+        "command": "mantra.configureListening",
+        "title": "Mantra: Configure Listening Sensitivity"
+      }
+    ],
+    "keybindings": [
+      {
+        "command": "mantra.start",
+        "key": "ctrl+shift+1"
+      },
+      {
+        "command": "mantra.pause",
+        "key": "ctrl+shift+2"
+      },
+      {
+        "command": "mantra.resume",
+        "key": "ctrl+shift+3"
+      }
+    ],
+    "configuration": {
+      "title": "Mantra",
+      "properties": {
+        "mantra.trailingSilenceMs": {
+          "type": "number",
+          "default": 1000,
+          "minimum": 100,
+          "description": "Trailing silence (ms) before recording stops."
+        }
+      }
+    }
+  },
+  "license": "Proprietary",
+  "scripts": {
+    "compile": "tsc -p .",
+    "watch": "tsc -w -p .",
+    "pretest": "npm run compile && npm run lint",
+    "test": "node ./out/test/runTest.js",
+    "lint": "eslint . --ext .ts",
+    "package": "vsce package",
+    "publish:marketplace": "vsce publish",
+    "publish:openvsx": "ovsx publish --pat $OVSX_TOKEN",
+    "vscode:prepublish": "npm run compile"
+  },
+  "dependencies": {
+    "@deepgram/sdk": "^3.7.0",
+    "ffmpeg-static": "^5.1.0",
+    "groq-sdk": "^0.30.0"
+  },
+  "devDependencies": {
+    "@types/node": "^20.12.12",
+    "@types/vscode": "^1.98.0",
+    "@vscode/test-electron": "^2.3.9",
+    "eslint": "^9.6.0",
+    "ovsx": "^0.9.0",
+    "typescript": "^5.5.4",
+    "@vscode/vsce": "^3.6.0"
+  }
+}
