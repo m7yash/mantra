@@ -374,20 +374,23 @@ export class Model {
       };
 
       // Read trailing silence (ms) from VS Code settings; default 1000ms, clamp to >=100ms
-      const trailingMsCfg = Math.max(100, Number(
-        vscode.workspace.getConfiguration('mantra').get('trailingSilenceMs', 1000)
-      ));
+      const trailingMsCfg = Math.max(
+        100,
+        Number(vscode.workspace.getConfiguration('mantra').get<number>('trailingSilenceMs', 1000))
+      );
 
       // Live STT socket options (raw 16kHz mono PCM)
       const liveOpts: Record<string, any> = {
-        model: modelName,
+        model: 'nova-3',
         encoding: 'linear16',
         sample_rate: 16000,
         channels: 1,
         interim_results: true,
         smart_format: true,
-        endpointing: String(trailingMsCfg), // ms of silence to end an utterance
-        utterance_end_ms: String(Math.max(1000, trailingMsCfg)),
+        // ms of silence to end an utterance (Deepgram endpointing)
+        endpointing: trailingMsCfg,
+        // keep finalization guardrail a bit higher than endpointing
+        utterance_end_ms: Math.max(1500, trailingMsCfg + 500),
       };
 
       // Send biasing terms:
@@ -493,6 +496,7 @@ export class Model {
     utterance: string,
     ctx: { editorContext: string; commands: string[]; filename?: string; editor?: vscode.TextEditor }
   ): Promise<RouteResult> {
+    console.log('entering decide')
     const commandList = (ctx.commands || []).map(c => `${c}`).join(', ');
     const editorCtx = `Editor context:\n${ctx.editorContext || '(none)'}\n${ctx.filename ? 'Filename: ' + ctx.filename : ''}`;
 

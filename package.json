@@ -61,7 +61,7 @@
       "properties": {
         "mantra.trailingSilenceMs": {
           "type": "number",
-          "default": 1000,
+          "default": 2000,
           "minimum": 100,
           "description": "Trailing silence (ms) before recording stops."
         }

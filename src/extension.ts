@@ -573,8 +573,8 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   const configureDisposable = vscode.commands.registerCommand('mantra.configureListening', async () => {
     const presets = [
       { label: 'Conservative (no false stops)', detail: 'trailing 3000ms', v: { t: 3000 } },
-      { label: 'Balanced (recommended)', detail: 'trailing 1000ms', v: { t: 1000 } },
-      { label: 'Sensitive (fast stop)', detail: 'trailing 500ms', v: { t: 500 } },
+      { label: 'Balanced (recommended)', detail: 'trailing 2000ms', v: { t: 2000 } },
+      { label: 'Sensitive (fast stop)', detail: 'trailing 1000ms', v: { t: 1000 } },
       { label: 'Custom…', detail: 'Enter a trailing silence in milliseconds', v: { t: -1 } },
     ];
     const choice = await vscode.window.showQuickPick(presets, { placeHolder: 'Choose a listening profile' });
