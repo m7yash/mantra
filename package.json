@@ -3,7 +3,7 @@
   "displayName": "Mantra",
   "publisher": "mishra7yash",
   "icon": "mantralogo.png",
-  "version": "0.1.8",
+  "version": "0.1.9",
   "description": "Control VS Code with your voice. Extremely accurate, absurdly fast.",
   "engines": {
     "vscode": "^1.98.0"
