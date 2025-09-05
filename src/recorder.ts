@@ -23,8 +23,8 @@ function buildInputArgs(): string[] {
     return ['-f', 'pulse', '-i', 'default'];
   }
   if (process.platform === 'win32') {
-    // Left as-is to avoid breaking Windows behavior in your codebase.
-    return ['-f', 'dshow', '-i', 'audio=default'];
+    // Prefer WASAPI default; users can override with MANTRA_AUDIO_INPUT
+    return ['-f', 'wasapi', '-i', 'default'];
   }
   return [];
 }
