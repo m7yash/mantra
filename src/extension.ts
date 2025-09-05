@@ -528,7 +528,7 @@ async function ensureApiKeys(context: vscode.ExtensionContext): Promise<boolean>
 }
 
 export async function activate(context: vscode.ExtensionContext): Promise<void> {
-  console.log('Mantra extension activated');
+  console.log('Mantra extension activated!');
 
   if (!outputChannel) {
     outputChannel = vscode.window.createOutputChannel('Mantra');
@@ -570,7 +570,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     await context.globalState.update('mantra.onboarded', true);
   }
 
-  const configureDisposable = vscode.commands.registerCommand('mantra.configureListening', async () => {
+  const configureAudioDisposable = vscode.commands.registerCommand('mantra.configureListening', async () => {
     const presets = [
       { label: 'Conservative (no false stops)', detail: 'trailing 3000ms', v: { t: 3000 } },
       { label: 'Balanced (recommended)', detail: 'trailing 2000ms', v: { t: 2000 } },
@@ -741,7 +741,19 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     return vscode.commands.executeCommand('mantra.start');
   });
 
-  context.subscriptions.push(startDisposable, pauseDisposable, resumeDisposable, configureDisposable);
+  const configurePromptDisposable = vscode.commands.registerCommand('mantra.configurePrompt', async () => {
+  try {
+    await vscode.commands.executeCommand('workbench.action.openSettings', 'mantra.prompt');
+  } catch (e) {
+    console.log('Failed to open settings to mantra.prompt; opening Settings UI instead', e);
+    await vscode.commands.executeCommand('workbench.action.openSettings');
+  }
+});
+
+  // Add to subscriptions:
+  context.subscriptions.push(
+    startDisposable, pauseDisposable, resumeDisposable, configureAudioDisposable, configurePromptDisposable
+  );
 }
 
 export function deactivate() {

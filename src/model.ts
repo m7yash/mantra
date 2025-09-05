@@ -568,43 +568,12 @@ export class Model {
       } catch (e) { console.log('[Mantra] pre-LLM context error (ignored)', e); }
     }
 
-    const systemCore = `
-You are a precise router and code editor. You are trying to classify the instruction and generate the appropriate payload.
-You will receive the file name (if known), a general editor context, a brief cursor summary, an "enclosing symbol" section (the smallest function/class/etc. containing the cursor), and the ENTIRE file contents.
-Keep in mind that the instructions you receive will be based off of a speech-to-text transcript, so use your best judgment to understand what the user was trying to say as there may be inaccuracies in the transcription.
+    const cfg = vscode.workspace.getConfiguration('mantra');
+    const configuredPrompt = (cfg.get<string>('prompt') ?? '').trim();
+    const systemBase = configuredPrompt;
 
-Output format MUST be:
-question <answer to give the user>
-command <one canonical command phrase from the provided list>
-modification <ENTIRE updated file content — no code fences>
-
-Rules:
-1) The VERY FIRST WORD must be exactly one of: question, command, modification.
-2) Then a single space, then the payload.
-3) For command: pick the closest canonical PHRASE from the full list provided of available canonical commands. Do NOT invent new ones. Commands would be like:
-- "please cut the first three lines" -> cut lines 1 to 3
-- "can you undo that?" -> undo
-- "line four" -> go to line 4
-- "select lines twenty to twenty-five" -> select lines 20 to 25
-- "save file"
-4) For modification: produce the full file contents with ALL requested changes applied.
-   - Use the ENTIRE file contents provided as the source of truth. You may modify ANY part of the file as needed by the instruction.
-   - Use the cursor summary and enclosing symbol ONLY to interpret relative phrases like "this line" or "this function"; do not restrict edits to that region.
-   - If there is a selection, treat it as the target region unless the instruction clearly indicates otherwise.
-   - If the instruction seems to be actual code, such as "total underscore sum equals zero", add only that code (e.g., total_sum = 0) and do nothing else
-   - Instructions could also be more generic like "print each variable in this function", "add multithreading", or "can you make it multiplayer too?".
-   - Return ONLY the final file content as the payload — no markdown fences, no language tags, no prose, no extra quotes or backticks at the beginning or end.
-   - Be very sure to only make the changes they ask for, do not make any unnecessary changes on your own at all.
-5) Questions will be like "explain this line" or "how should I refactor this?". Your answer should be concise.
-6) If the instruction is incoherent/ambiguous, choose "question" (NEVER "modification") and begin the payload with: "I am not sure what you mean by..."
-- then make your best guess as to what they mean and provide your best helpful answer
-- do not ask them to clarify further, just explain what you understood and answer.
-7) Never preface with explanations. No JSON. No labels other than the three.
-8) Do NOT change the user's formatting/spacing unless they explicitly ask you to.
-9) Do NOT spend any time reasoning, just give a direct answer immediately! If you do start reasoning, stop immediately and just provide the final answer.
-`.trim();
     const system = [
-      systemCore,
+      systemBase,
       '',
       'Canonical command catalog (authoritative; choose ONLY from these when outputting type=command):',
       commandList || '- (none provided)'

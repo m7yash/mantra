@@ -78,7 +78,7 @@ Open **Settings → Extensions → Mantra** to adjust.
 - **When the LLM is used:** Mantra includes the **current file's full code** as context for the model. Mantra also provides a list of all file names to the model.
 - **Secrets & storage:** Your API keys are stored securely in VS Code **Secret Storage**. No keys are written to disk in plaintext by the extension.
 - **On‑screen content:** Transcripts and actions may appear briefly as status messages in VS Code.
-- **For more:** See Deepgram and Groq's privacy policies. **Other than the Deepgram and Groq API usage, Mantra is executed locally on your computer as a VS Code extension and does not collect, save, or share any of your data.**
+- **For more:** See Deepgram and Groq's privacy policies. **Other than the Deepgram and Groq API usage, Mantra is executed locally on your computer as a VS Code extension and does not collect, save, or share any of your data.** You can set zero data retention for Groq here https://console.groq.com/settings/data-controls.
 
 ---
 
