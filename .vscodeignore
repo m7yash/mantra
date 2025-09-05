@@ -1,0 +1,32 @@
+.vscode/**
+.vscode-test/**
+src/**
+.gitignore
+.yarnrc
+vsc-extension-quickstart.md
+**/tsconfig.json
+**/eslint.config.mjs
+**/*.map
+**/*.ts
+**/.vscode-test.*
+# --- workspace/editor meta ---
+.vscode/**
+.vscode-test.mjs
+.vscode-test/**
+
+# --- source (we ship compiled JS in out/) ---
+src/**
+*.ts                     # your top-level TS files: extension.ts, model.ts, etc.
+
+# --- build/test/config noise ---
+tsconfig.json
+eslint.config.mjs
+.eslintrc*
+.prettier*
+.vsc-extension-quickstart.md
+
+# --- VCS & misc ---
+**/.git/**
+.gitignore
+**/.DS_Store
+**/*.log

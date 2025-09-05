@@ -25,11 +25,34 @@ export function parseLabeledPayload(raw: string): RouteResult {
   return { type, payload, raw };
 }
 
+function withTimeout<T>(p: Thenable<T>, ms: number): Promise<T | null> {
+  return new Promise((resolve) => {
+    let settled = false;
+    const timer = setTimeout(() => {
+      if (!settled) {
+        settled = true;
+        resolve(null);
+      }
+    }, ms);
+    Promise.resolve(p).then(
+      v => { if (!settled) { settled = true; clearTimeout(timer); resolve(v); } },
+      _ => { if (!settled) { settled = true; clearTimeout(timer); resolve(null); } },
+    );
+  });
+}
+
 async function getEnclosingSymbol(editor: vscode.TextEditor) {
-  const symbols = await vscode.commands.executeCommand<vscode.DocumentSymbol[]>(
-    'vscode.executeDocumentSymbolProvider',
-    editor.document.uri
+  const symbols = await withTimeout(
+    vscode.commands.executeCommand<vscode.DocumentSymbol[]>(
+      'vscode.executeDocumentSymbolProvider',
+      editor.document.uri
+    ),
+    800
   );
+  if (!symbols || !Array.isArray(symbols)) {
+    console.log('[Mantra] symbol provider timed out or returned nothing.');
+    return null;
+  }
   const pos = editor.selection.active;
 
   function find(symList: vscode.DocumentSymbol[] | undefined): vscode.DocumentSymbol | null {
@@ -492,11 +515,11 @@ export class Model {
     });
   }
 
-  async decideOneShot(
+  async decide(
     utterance: string,
     ctx: { editorContext: string; commands: string[]; filename?: string; editor?: vscode.TextEditor }
   ): Promise<RouteResult> {
-    console.log('entering decide')
+    console.log('Entering decide function')
     const commandList = (ctx.commands || []).map(c => `${c}`).join(', ');
     const editorCtx = `Editor context:\n${ctx.editorContext || '(none)'}\n${ctx.filename ? 'Filename: ' + ctx.filename : ''}`;
 
@@ -514,8 +537,10 @@ export class Model {
             `- line text: ${cur.lineText}`,
             `- selection: ${cur.selectionText ? cur.selectionText : '(none)'}`
           ].join('\n');
+        console.log('[Mantra] cursor context ready');
 
         const enc = await getEnclosingSymbol(ctx.editor);
+        console.log('[Mantra] symbol context %s', enc ? 'hit' : 'miss/timeout');
         if (enc) {
           const startLine = enc.range.start.line + 1;
           const startCol = enc.range.start.character + 1;
@@ -533,9 +558,14 @@ export class Model {
               '```'
             ].join('\n');
         }
+        const MAX_CHARS = 60000;
         const whole = ctx.editor.document.getText();
-        fullFileStr = ['Full file contents (entire document):', '```', whole, '```'].join('\n');
-      } catch { /* ignore */ }
+        const truncated = whole.length > MAX_CHARS
+          ? `${whole.slice(0, MAX_CHARS)}\n/* [truncated ${whole.length - MAX_CHARS} chars] */`
+          : whole;
+        fullFileStr = ['Full file contents (entire document):', '```', truncated, '```'].join('\n');
+        console.log('[Mantra] full file captured');
+      } catch (e) { console.log('[Mantra] pre-LLM context error (ignored)', e); }
     }
 
     const systemCore = `

@@ -669,7 +669,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         const commandsList = canonicalCommandPhrases();
         let result: any;
         try {
-          result = await model!.decideOneShot(transcript, {
+          result = await model!.decide(transcript, {
             editorContext,
             commands: commandsList,
             filename: editor?.document.fileName,
