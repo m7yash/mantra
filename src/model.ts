@@ -520,6 +520,13 @@ export class Model {
     ctx: { editorContext: string; commands: string[]; filename?: string; editor?: vscode.TextEditor }
   ): Promise<RouteResult> {
     console.log('Entering decide function')
+    
+    // Safety net
+    const commandsOnly = vscode.workspace.getConfiguration('mantra').get<boolean>('commandsOnly', false);
+    if (commandsOnly) {
+      return { type: 'command', payload: (utterance || '').trim(), raw: `command ${(utterance || '').trim()}` };
+    }
+
     const commandList = (ctx.commands || []).map(c => `${c}`).join(', ');
     const editorCtx = `Editor context:\n${ctx.editorContext || '(none)'}\n${ctx.filename ? 'Filename: ' + ctx.filename : ''}`;
 

@@ -66,6 +66,8 @@ You’ll be prompted the first time; keys are stored in VS Code Secret Storage. 
 
 ## Settings (tune for your mic/environment)
 - **Trailing silence (ms)** — default **300**: how long of silence ends the clip (raise to avoid cut‑offs).
+- **Prompt** — Change the default LLM prompt to whatever you would like.
+- **Commands Only** - Opt out of any LM usage. Note that this requires you to use commands exactly as they appear in the list below. For example, you would have to say "redo" instead of "let's redo" since the LLM will not be used to understand your intent.
 
 Open **Settings → Extensions → Mantra** to adjust.
 

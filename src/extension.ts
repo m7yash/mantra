@@ -491,22 +491,27 @@ function stripMarkdownCodeFence(text: string): string {
 }
 
 async function ensureApiKeys(context: vscode.ExtensionContext): Promise<boolean> {
+  const commandsOnly = vscode.workspace.getConfiguration('mantra').get<boolean>('commandsOnly', false);
+
   // Groq (chat)
-  if (!groqApiKey) {
-    try { groqApiKey = (await context.secrets.get('GROQ_API_KEY')) || ''; } catch { /* ignore */ }
+  if (!commandsOnly) {
     if (!groqApiKey) {
-      groqApiKey = await vscode.window.showInputBox({
-        prompt: 'Enter your Groq API key',
-        ignoreFocusOut: true,
-        password: true,
-      }) || '';
+      try { groqApiKey = (await context.secrets.get('GROQ_API_KEY')) || ''; } catch { /* ignore */ }
       if (!groqApiKey) {
-        vscode.window.showWarningMessage('GROQ_API_KEY is required.');
-        return false;
+        groqApiKey = await vscode.window.showInputBox({
+          prompt: 'Enter your Groq API key',
+          ignoreFocusOut: true,
+          password: true,
+        }) || '';
+        if (!groqApiKey) {
+          vscode.window.showWarningMessage('GROQ_API_KEY is required.');
+          return false;
+        }
+        await context.secrets.store('GROQ_API_KEY', groqApiKey);
       }
-      await context.secrets.store('GROQ_API_KEY', groqApiKey);
     }
   }
+
   // Deepgram (speech-to-text)
   if (!deepgramApiKey) {
     try { deepgramApiKey = (await context.secrets.get('DEEPGRAM_API_KEY')) || ''; } catch { /* ignore */ }
@@ -523,7 +528,8 @@ async function ensureApiKeys(context: vscode.ExtensionContext): Promise<boolean>
       await context.secrets.store('DEEPGRAM_API_KEY', deepgramApiKey);
     }
   }
-  if (!model) model = new Model(groqApiKey, deepgramApiKey);
+
+  if (!commandsOnly && !model) model = new Model(groqApiKey, deepgramApiKey);
   return true;
 }
 
@@ -655,6 +661,14 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         if (maybeHandled) return;
         if (await handleTextCommand(transcript, context)) return;
 
+        // --- after tryExecuteMappedCommand(...) and handleTextCommand(...) ---
+        const commandsOnly = vscode.workspace.getConfiguration('mantra').get<boolean>('commandsOnly', false);
+        if (commandsOnly) {
+          // In commands-only mode we stop here: mapped commands + text ops only
+          vscode.window.setStatusBarMessage('Mantra: commands-only (LLM disabled)', 1500);
+          return;
+        }
+
         // --- build routing context ---
         const editor = vscode.window.activeTextEditor || null;
         const editorContext = (editor
@@ -747,12 +761,28 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   } catch (e) {
     console.log('Failed to open settings to mantra.prompt; opening Settings UI instead', e);
     await vscode.commands.executeCommand('workbench.action.openSettings');
-  }
-});
+  }});
+
+  const toggleCommandsOnlyDisposable = vscode.commands.registerCommand(
+  'mantra.toggleCommandsOnly',
+  async () => {
+    const cfg = vscode.workspace.getConfiguration('mantra');
+    const current = cfg.get<boolean>('commandsOnly', false);
+    await cfg.update('commandsOnly', !current, vscode.ConfigurationTarget.Global);
+    vscode.window.setStatusBarMessage(
+      `Mantra: commands-only ${!current ? 'enabled' : 'disabled'}`,
+      2000
+    );
+  });
 
   // Add to subscriptions:
   context.subscriptions.push(
-    startDisposable, pauseDisposable, resumeDisposable, configureAudioDisposable, configurePromptDisposable
+    startDisposable,
+    pauseDisposable,
+    resumeDisposable,
+    configureAudioDisposable,
+    configurePromptDisposable,
+    toggleCommandsOnlyDisposable
   );
 }
 
