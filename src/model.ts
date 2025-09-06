@@ -326,16 +326,28 @@ function buildKeytermsFinal(basePool: string[]): string[] {
 
 
 export class Model {
-  private groq: Groq;
+  private groq: Groq | null = null;
   private deepgram: ReturnType<typeof createDeepgramClient> | null = null; // TODO see if outdated?
   private baseKeyterms: string[] = [];
 
   constructor(apiKey: string, deepgramApiKey?: string) {
-    this.groq = new Groq({ apiKey });
+    if (apiKey) {
+      this.groq = new Groq({ apiKey });
+    }
     if (deepgramApiKey) {
       this.deepgram = createDeepgramClient(deepgramApiKey);
     }
     this.baseKeyterms = seedKeytermsBase();
+  }
+
+  // NEW: let the extension inject the key later
+  public setGroqApiKey(apiKey: string) {
+    this.groq = apiKey ? new Groq({ apiKey }) : null;
+  }
+
+  // (optional but handy)
+  public hasGroq(): boolean {
+    return !!this.groq;
   }
 
   private async chatText(req: {
@@ -343,6 +355,18 @@ export class Model {
     model: string;
     temperature?: number;
   }): Promise<string> {
+    if (!this.groq) {
+      const e: any = new Error('Groq API key missing');
+      e.status = 401;
+      e.provider = 'groq';
+      throw e;
+    }
+    const res = await this.groq.chat.completions.create({
+      model: req.model,
+      temperature: req.temperature ?? 0,
+      messages: req.messages,
+      reasoning_effort: "low",
+    });
     try {
       const res = await this.groq.chat.completions.create({
         model: req.model,
@@ -520,7 +544,7 @@ export class Model {
     ctx: { editorContext: string; commands: string[]; filename?: string; editor?: vscode.TextEditor }
   ): Promise<RouteResult> {
     console.log('Entering decide function')
-    
+
     // Safety net
     const commandsOnly = vscode.workspace.getConfiguration('mantra').get<boolean>('commandsOnly', false);
     if (commandsOnly) {
@@ -559,13 +583,13 @@ export class Model {
               `- name: ${enc.name}`,
               `- kind: ${enc.kind}`,
               `- range: [${startLine}:${startCol} - ${endLine}:${endCol}]`,
-              `- code (truncated to 12k):`,
+              `- code (truncated to 100000):`,
               '```',
               enc.code,
               '```'
             ].join('\n');
         }
-        const MAX_CHARS = 60000;
+        const MAX_CHARS = 100000;
         const whole = ctx.editor.document.getText();
         const truncated = whole.length > MAX_CHARS
           ? `${whole.slice(0, MAX_CHARS)}\n/* [truncated ${whole.length - MAX_CHARS} chars] */`

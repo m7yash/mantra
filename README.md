@@ -10,7 +10,8 @@ Demo: https://youtu.be/ZSNIh9Qce8w
 
 Discord: https://discord.gg/fmWCScWuUn
 
-> Please read the Privacy and Data Handling section before use. Use a good quality and well-positioned desktop microphone for best results.
+> Please read the Privacy and Data Handling section before use.
+> Use a good quality and well-positioned desktop microphone for best results.
 
 ---
 

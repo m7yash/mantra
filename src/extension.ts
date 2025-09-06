@@ -493,28 +493,9 @@ function stripMarkdownCodeFence(text: string): string {
 async function ensureApiKeys(context: vscode.ExtensionContext): Promise<boolean> {
   const commandsOnly = vscode.workspace.getConfiguration('mantra').get<boolean>('commandsOnly', false);
 
-  // Groq (chat)
-  if (!commandsOnly) {
-    if (!groqApiKey) {
-      try { groqApiKey = (await context.secrets.get('GROQ_API_KEY')) || ''; } catch { /* ignore */ }
-      if (!groqApiKey) {
-        groqApiKey = await vscode.window.showInputBox({
-          prompt: 'Enter your Groq API key',
-          ignoreFocusOut: true,
-          password: true,
-        }) || '';
-        if (!groqApiKey) {
-          vscode.window.showWarningMessage('GROQ_API_KEY is required.');
-          return false;
-        }
-        await context.secrets.store('GROQ_API_KEY', groqApiKey);
-      }
-    }
-  }
-
-  // Deepgram (speech-to-text)
+  // Deepgram (speech-to-text) — still required to listen to commands
   if (!deepgramApiKey) {
-    try { deepgramApiKey = (await context.secrets.get('DEEPGRAM_API_KEY')) || ''; } catch { /* ignore */ }
+    try { deepgramApiKey = (await context.secrets.get('DEEPGRAM_API_KEY')) || ''; } catch {}
     if (!deepgramApiKey) {
       deepgramApiKey = await vscode.window.showInputBox({
         prompt: 'Enter your Deepgram API key',
@@ -529,7 +510,33 @@ async function ensureApiKeys(context: vscode.ExtensionContext): Promise<boolean>
     }
   }
 
-  if (!commandsOnly && !model) model = new Model(groqApiKey, deepgramApiKey);
+  // Ensure we have a model instance for STT even if LLM is off
+  if (!model) {
+    // NOTE: pass empty Groq key for now; we’ll set it below if needed
+    model = new Model('', deepgramApiKey);
+  }
+
+  // Groq (chat) — only when LLM is enabled
+  if (!commandsOnly) {
+    if (!groqApiKey) {
+      try { groqApiKey = (await context.secrets.get('GROQ_API_KEY')) || ''; } catch {}
+      if (!groqApiKey) {
+        groqApiKey = await vscode.window.showInputBox({
+          prompt: 'Enter your Groq API key',
+          ignoreFocusOut: true,
+          password: true,
+        }) || '';
+        if (!groqApiKey) {
+          vscode.window.showWarningMessage('GROQ_API_KEY is required to use LLM features.');
+          return false;
+        }
+        await context.secrets.store('GROQ_API_KEY', groqApiKey);
+      }
+    }
+    // Inject/refresh the key on the live model
+    model.setGroqApiKey(groqApiKey);
+  }
+
   return true;
 }
 
@@ -667,6 +674,15 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
           // In commands-only mode we stop here: mapped commands + text ops only
           vscode.window.setStatusBarMessage('Mantra: commands-only (LLM disabled)', 1500);
           return;
+        }
+
+        // If LLM is on now, make sure a Groq key is available and set
+        if (!model || !(model as any).hasGroq || !(model as any).hasGroq()) {
+          const ok = await ensureApiKeys(context);
+          if (!ok || !((model as any).hasGroq && (model as any).hasGroq())) {
+            // User declined or still missing key
+            return;
+          }
         }
 
         // --- build routing context ---
