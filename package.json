@@ -48,6 +48,18 @@
       {
         "command": "mantra.toggleCommandsOnly",
         "title": "Mantra: Toggle Commands-Only Mode"
+      },
+      {
+        "command": "mantra.openSettings",
+        "title": "Mantra: Open Settings"
+      },
+      {
+        "command": "mantra.editGroqApiKey",
+        "title": "Mantra: Set Groq API Key"
+      },
+      {
+        "command": "mantra.editDeepgramApiKey",
+        "title": "Mantra: Set Deepgram API Key"
       }
     ],
     "keybindings": [
@@ -62,6 +74,10 @@
       {
         "command": "mantra.resume",
         "key": "ctrl+shift+3"
+      },
+      {
+        "key": "ctrl+shift+4",
+        "command": "mantra.openSettings"
       }
     ],
     "configuration": {
@@ -71,7 +87,7 @@
           "type": "number",
           "default": 2000,
           "minimum": 100,
-          "description": "Trailing silence (ms) before recording stops."
+          "description": "Trailing silence (ms) before recording stops. 2000 is a good default, but increasing it to 3000 or 4000 will ensure that the words at the end of your instruction are not cut off."
         },
         "mantra.prompt": {
           "type": "string",
@@ -83,6 +99,26 @@
           "type": "boolean",
           "default": false,
           "description": "Bypass the LLM completely. Only run canonical commands and text ops (no code edits, no answers)."
+        },
+        "mantra.groqApiKey": {
+          "type": "string",
+          "default": "",
+          "description": "Groq API key. Leave empty to use the GROQ_API_KEY environment variable.",
+          "scope": "application",
+          "editPresentation": "password"
+        },
+        "mantra.deepgramApiKey": {
+          "type": "string",
+          "default": "",
+          "description": "Deepgram API key. Leave empty to use the DEEPGRAM_API_KEY environment variable.",
+          "scope": "application",
+          "editPresentation": "password"
+        },
+        "mantra.reasoningEffort": {
+        "type": "string",
+        "enum": ["low", "medium", "high"],
+        "default": "low",
+        "description": "Set the reasoning effort level for the model (low, medium, high)."
         }
       }
     }

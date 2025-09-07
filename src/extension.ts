@@ -12,6 +12,17 @@ let outputChannel: vscode.OutputChannel | null = null;
 // Track explicit pause state separate from recorder process state
 let __mantraPaused = false;
 
+function syncFromSettings() {
+  const cfg = vscode.workspace.getConfiguration('mantra');
+  const groq = (cfg.get<string>('groqApiKey') || '').trim();
+  const deep = (cfg.get<string>('deepgramApiKey') || '').trim();
+  const effort = (cfg.get<string>('reasoningEffort') || 'low').trim();
+
+  if (groq) process.env.GROQ_API_KEY = groq;
+  if (deep) process.env.DEEPGRAM_API_KEY = deep;
+  process.env.MANTRA_REASONING_EFFORT = effort;
+}
+
 const SENSITIVE_FILE_PATTERNS: RegExp[] = [
   // .env & dotenv-style files
   /(\/|^)\.env(\.[^\/\\]+)?$/i,
@@ -543,22 +554,25 @@ async function ensureApiKeys(context: vscode.ExtensionContext): Promise<boolean>
 export async function activate(context: vscode.ExtensionContext): Promise<void> {
   console.log('Mantra extension activated!');
 
+  // Immediately apply keys from settings on activation
+  syncFromSettings();
+
+  // Re-apply whenever the user updates the settings
+  context.subscriptions.push(
+    vscode.workspace.onDidChangeConfiguration(e => {
+      if (
+        e.affectsConfiguration('mantra.groqApiKey') ||
+        e.affectsConfiguration('mantra.deepgramApiKey') ||
+        e.affectsConfiguration('mantra.reasoningEffort')
+      ) {
+        syncFromSettings();
+      }
+    })
+  );
+
   if (!outputChannel) {
     outputChannel = vscode.window.createOutputChannel('Mantra');
   }
-
-  // Migrate legacy sensitivity settings: leadingSilenceMs and silenceDb are deprecated
-  try {
-    const cfg = vscode.workspace.getConfiguration('mantra');
-    const hadLegacy = (cfg.get('leadingSilenceMs') !== undefined) || (cfg.get('silenceDb') !== undefined);
-    if (hadLegacy) {
-      await cfg.update('leadingSilenceMs', undefined, vscode.ConfigurationTarget.Global);
-      await cfg.update('silenceDb', undefined, vscode.ConfigurationTarget.Global);
-      vscode.window.showInformationMessage(
-        'Mantra updated: using only trailing silence (ms) for end-pointing. Old settings removed.'
-      );
-    }
-  } catch { }
 
   const onboarded = context.globalState.get<boolean>('mantra.onboarded');
   if (!onboarded) {
@@ -574,7 +588,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       await cfg.update('leadingSilenceMs', undefined, vscode.ConfigurationTarget.Global);
       await cfg.update('silenceDb', undefined, vscode.ConfigurationTarget.Global);
       vscode.window.setStatusBarMessage(
-        'Balanced profile applied (trailing silence only). Legacy settings removed.',
+        'Balanced profile applied (trailing silence only).',
         3000
       );
     } else if (pick === 'Open Settings') {
@@ -791,6 +805,23 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     );
   });
 
+  const openSettingsCmd = vscode.commands.registerCommand(
+    'mantra.openSettings',
+    () => vscode.commands.executeCommand('workbench.action.openSettings', '@ext:mishra7yash.mantra')
+  );
+
+  const editGroqCmd = vscode.commands.registerCommand(
+    'mantra.editGroqApiKey',
+    () => vscode.commands.executeCommand('workbench.action.openSettings', '@id:mantra.groqApiKey')
+  );
+
+  const editDeepgramCmd = vscode.commands.registerCommand(
+    'mantra.editDeepgramApiKey',
+    () => vscode.commands.executeCommand('workbench.action.openSettings', '@id:mantra.deepgramApiKey')
+  );
+
+  context.subscriptions.push(openSettingsCmd, editGroqCmd, editDeepgramCmd);
+
   // Add to subscriptions:
   context.subscriptions.push(
     startDisposable,
@@ -798,7 +829,10 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     resumeDisposable,
     configureAudioDisposable,
     configurePromptDisposable,
-    toggleCommandsOnlyDisposable
+    toggleCommandsOnlyDisposable,
+    openSettingsCmd,
+    editGroqCmd,
+    editDeepgramCmd
   );
 }
 

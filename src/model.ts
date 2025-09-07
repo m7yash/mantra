@@ -361,18 +361,12 @@ export class Model {
       e.provider = 'groq';
       throw e;
     }
-    const res = await this.groq.chat.completions.create({
-      model: req.model,
-      temperature: req.temperature ?? 0,
-      messages: req.messages,
-      reasoning_effort: "low",
-    });
     try {
       const res = await this.groq.chat.completions.create({
         model: req.model,
         temperature: req.temperature ?? 0,
         messages: req.messages,
-        reasoning_effort: "low",
+        reasoning_effort: ((process.env.MANTRA_REASONING_EFFORT as 'low' | 'medium' | 'high') || 'low'),
       });
       const choice = res?.choices?.[0];
       const content = choice?.message?.content ?? '';

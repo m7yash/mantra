@@ -61,7 +61,7 @@ You’ll be prompted the first time; keys are stored in VS Code Secret Storage. 
 - **Start Recording** — `Ctrl+Shift+1`  
 - **Pause Listening** — `Ctrl+Shift+2`  
 - **Resume Listening** — `Ctrl+Shift+3`  
-- **Configure Listening Sensitivity** — (Command Palette)
+- **Open Mantra settings** — `Ctrl+Shift+4`
 
 ---
 
