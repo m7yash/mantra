@@ -62,6 +62,21 @@ function splitArgsRespectQuotes(s: string): string[] {
   return out;
 }
 
+function runningInWSL(): boolean {
+  try {
+    if (process.env.WSL_DISTRO_NAME) return true;
+    const rel = fs.readFileSync('/proc/sys/kernel/osrelease', 'utf8');
+    return /microsoft/i.test(rel);
+  } catch { return false; }
+}
+
+function wslgAvailable(): boolean {
+  try {
+    if (process.env.PULSE_SERVER) return true;
+    return fs.existsSync('/mnt/wslg/PulseServer');
+  } catch { return false; }
+}
+
 function ensureDir(dir: string) {
   try { fs.mkdirSync(dir, { recursive: true }); } catch { /* ignore */ }
 }
@@ -284,13 +299,28 @@ export async function startMicStream(
     return;
   }
 
+  // WSL2 without WSLg has no Linux audio server → no mic
+  if (process.platform === 'linux' && runningInWSL() && !wslgAvailable()) {
+    const help = 'No Linux audio server detected. In WSL2 without WSLg there is no microphone device. Enable WSLg or run the extension on the Windows host.';
+    logError(help);
+    vscode.window.showErrorMessage(help);
+    return;
+  }
+
   logInfo(`Platform: ${process.platform}`);
-  const envOverride = process.env.MANTRA_AUDIO_INPUT?.trim();
-  if (envOverride) logInfo(`MANTRA_AUDIO_INPUT override: ${envOverride}`);
+
+  const cfgOverrideRaw = (vscode.workspace.getConfiguration('mantra').get<string>('microphoneInput', '') || '').trim();
+  const envOverrideRaw = (process.env.MANTRA_AUDIO_INPUT || '').trim();
+  const override = cfgOverrideRaw || envOverrideRaw;
+
+  if (override) logInfo(`Microphone override: ${override}`);
 
   // Choose input
   let chosenInput: string[] | null = null;
-  if (process.platform === 'win32') {
+
+  if (override) {
+    chosenInput = splitArgsRespectQuotes(override);
+  } else if (process.platform === 'win32') {
     const candidates = buildWindowsCandidates(ffmpegCmd);
     logInfo(`Trying ${candidates.length} Windows input candidates…`);
     for (const c of candidates) {
@@ -300,13 +330,13 @@ export async function startMicStream(
       if (res.ok) { chosenInput = c; break; }
     }
     if (!chosenInput) {
-      const help = 'No Windows audio input could be opened via WASAPI or DirectShow. Check microphone access (Windows Settings → Privacy & security → Microphone) or set MANTRA_AUDIO_INPUT (e.g. -f dshow -i "audio=Microphone (Your Device)").';
+      const help = 'No Windows audio input could be opened via WASAPI/DShow. Set **Settings → Mantra → Microphone Input** or MANTRA_AUDIO_INPUT (e.g. -f dshow -i "audio=Microphone (Your Device)").';
       logError(help);
       vscode.window.showErrorMessage(help);
       return;
     }
   } else {
-    chosenInput = envOverride ? splitArgsRespectQuotes(envOverride) : buildNonWindowsInputArgs();
+    chosenInput = buildNonWindowsInputArgs();
   }
 
   logInfo(`Using input: ${JSON.stringify(chosenInput)}`);
@@ -332,7 +362,7 @@ export async function startMicStream(
     if (!msg) return;
     logWarn(`ffmpeg: ${msg}`);
     status(`FFmpeg: ${msg}`, 3000);
-    if (/Unknown input format|Could not find audio device|No such device|Device busy|permission/i.test(msg)) {
+    if (/Unknown input format|Could not find audio device|No such device|Device busy|permission|PulseAudio:.*Connection refused|ALSA lib/i.test(msg)) {
       vscode.window.showWarningMessage(msg);
     }
   });

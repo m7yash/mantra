@@ -3,7 +3,7 @@
   "displayName": "Mantra",
   "publisher": "mishra7yash",
   "icon": "mantralogo.png",
-  "version": "0.2.8",
+  "version": "0.2.9",
   "description": "Control VS Code with your voice. Extremely accurate, absurdly fast.",
   "engines": {
     "vscode": "^1.98.0"
@@ -14,6 +14,7 @@
   ],
   "main": "./out/src/extension.js",
   "extensionKind": [
+    "ui",
     "workspace"
   ],
   "capabilities": {
@@ -21,7 +22,10 @@
       "supported": false,
       "description": "Records audio and may read file contents to send to cloud services; disabled in Restricted Mode."
     },
-    "virtualWorkspaces": false
+    "virtualWorkspaces": {
+      "supported": false,
+      "description": "Not supported: needs access to local audio devices."
+    }
   },
   "contributes": {
     "commands": [
@@ -60,6 +64,10 @@
       {
         "command": "mantra.editDeepgramApiKey",
         "title": "Mantra: Set Deepgram API Key"
+      },
+      {
+        "command": "mantra.selectMicrophone",
+        "title": "Mantra: Select Microphone"
       }
     ],
     "keybindings": [
@@ -76,8 +84,12 @@
         "key": "ctrl+shift+3"
       },
       {
-        "key": "ctrl+shift+4",
-        "command": "mantra.openSettings"
+        "command": "mantra.openSettings",
+        "key": "ctrl+shift+4"
+      },
+      {
+        "command": "mantra.selectMicrophone",
+        "key": "ctrl+shift+5"
       }
     ],
     "configuration": {
@@ -115,10 +127,20 @@
           "editPresentation": "password"
         },
         "mantra.reasoningEffort": {
-        "type": "string",
-        "enum": ["low", "medium", "high"],
-        "default": "low",
-        "description": "Set the reasoning effort level for the model (low, medium, high)."
+          "type": "string",
+          "enum": [
+            "low",
+            "medium",
+            "high"
+          ],
+          "default": "low",
+          "description": "Set the reasoning effort level for the model (low, medium, high)."
+        },
+        "mantra.microphoneInput": {
+          "type": "string",
+          "default": "",
+          "scope": "application",
+          "markdownDescription": "Chosen microphone input **(set via Command Palette → Mantra: Select Microphone)**. Leave empty for automatic detection. Advanced users may paste raw FFmpeg input args here.\n- Windows: WASAPI/DirectShow\n- macOS: AVFoundation\n- Linux: PulseAudio"
         }
       }
     }

@@ -3,6 +3,8 @@ import { startMicStream, pauseRecording, recorderActive } from './recorder';
 import { Model } from './model';
 import { canonicalCommandPhrases, tryExecuteMappedCommand } from './commands';
 import { handleCommand as handleTextCommand } from './textOps';
+import ffmpegStatic from 'ffmpeg-static';
+import { spawnSync } from 'child_process';
 
 let model: Model | null = null;
 let groqApiKey: string = '';
@@ -506,7 +508,7 @@ async function ensureApiKeys(context: vscode.ExtensionContext): Promise<boolean>
 
   // Deepgram (speech-to-text) — still required to listen to commands
   if (!deepgramApiKey) {
-    try { deepgramApiKey = (await context.secrets.get('DEEPGRAM_API_KEY')) || ''; } catch {}
+    try { deepgramApiKey = (await context.secrets.get('DEEPGRAM_API_KEY')) || ''; } catch { }
     if (!deepgramApiKey) {
       deepgramApiKey = await vscode.window.showInputBox({
         prompt: 'Enter your Deepgram API key',
@@ -530,7 +532,7 @@ async function ensureApiKeys(context: vscode.ExtensionContext): Promise<boolean>
   // Groq (chat) — only when LLM is enabled
   if (!commandsOnly) {
     if (!groqApiKey) {
-      try { groqApiKey = (await context.secrets.get('GROQ_API_KEY')) || ''; } catch {}
+      try { groqApiKey = (await context.secrets.get('GROQ_API_KEY')) || ''; } catch { }
       if (!groqApiKey) {
         groqApiKey = await vscode.window.showInputBox({
           prompt: 'Enter your Groq API key',
@@ -641,134 +643,135 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     while (!__mantraPaused) {
       let reportFn: ((msg: string) => void) | undefined;
       let completeProgress: (() => void) | undefined;
+
+      // Keep a single "Listening..." toast open while we capture + transcribe
       const progressDone = vscode.window.withProgress(
         { location: vscode.ProgressLocation.Notification, title: 'Listening...' },
-        (progress) => {
-          reportFn = (msg: string) => progress.report({ message: msg });
-          return new Promise<void>((resolve) => { completeProgress = () => resolve(); });
-        }
+        (progress) =>
+          new Promise<void>((resolve) => {
+            reportFn = (msg: string) => progress.report({ message: msg });
+            completeProgress = resolve;
+          })
       );
 
-      await startMicStream(context, async (pcm) => {
-        // Stream directly to Deepgram; show interim in the same notification
-        const transcript = await model!.transcribeStream(pcm, (partial) => {
-          if (partial && reportFn) reportFn(partial);
-        });
+      try {
+        await startMicStream(context, async (pcm) => {
+          // Send PCM to Deepgram; stream back partials to the same toast
+          const transcript = await model!.transcribeStream(pcm, (partial) => {
+            if (partial && reportFn) reportFn(partial);
+          });
 
-        if (completeProgress) completeProgress();
-        await progressDone;
+          if (!transcript) return;
 
-        if (!transcript) {
-          console.log('Empty transcript, ignoring');
-          return;
-        }
-        vscode.window.showInformationMessage('Transcribed: ' + transcript);
-        console.log('Transcript: ', transcript);
+          vscode.window.showInformationMessage('Transcribed: ' + transcript);
+          console.log('Transcript: ', transcript);
 
-        // --- PAUSE/RESUME interception (pre-LLM, highest priority) ---
-        const t = (transcript || '').trim().toLowerCase();
-        if (/(^|\b)(pause|stop listening)(\b|$)/.test(t)) {
-          vscode.window.showInformationMessage('Pausing Mantra...use keyboard shortcut to resume');
-          __mantraPaused = true;
-          pauseRecording();
-          return;
-        }
-        if (/(^|\b)(resume|start listening)(\b|$)/.test(t)) {
-          // fall through, we are already running
-        }
-
-        // --- try mapped command first ---
-        const maybeHandled = await tryExecuteMappedCommand(transcript);
-        if (maybeHandled) return;
-        if (await handleTextCommand(transcript, context)) return;
-
-        // --- after tryExecuteMappedCommand(...) and handleTextCommand(...) ---
-        const commandsOnly = vscode.workspace.getConfiguration('mantra').get<boolean>('commandsOnly', false);
-        if (commandsOnly) {
-          // In commands-only mode we stop here: mapped commands + text ops only
-          vscode.window.setStatusBarMessage('Mantra: commands-only (LLM disabled)', 1500);
-          return;
-        }
-
-        // If LLM is on now, make sure a Groq key is available and set
-        if (!model || !(model as any).hasGroq || !(model as any).hasGroq()) {
-          const ok = await ensureApiKeys(context);
-          if (!ok || !((model as any).hasGroq && (model as any).hasGroq())) {
-            // User declined or still missing key
+          // --- PAUSE/RESUME interception (pre-LLM) ---
+          const t = transcript.trim().toLowerCase();
+          if (/(^|\b)(pause|stop listening)(\b|$)/.test(t)) {
+            vscode.window.showInformationMessage('Pausing Mantra...use keyboard shortcut to resume');
+            __mantraPaused = true;
+            pauseRecording();
             return;
           }
-        }
-
-        // --- build routing context ---
-        const editor = vscode.window.activeTextEditor || null;
-        const editorContext = (editor
-          ? [
-            `Active file language: ${editor.document.languageId}`,
-            `Total lines: ${editor.document.lineCount}`,
-          ].join('\n')
-          : '(no active editor)');
-
-        if (!(await warnSensitiveFileAndMaybeProceed())) return;
-
-        const commandsList = canonicalCommandPhrases();
-        let result: any;
-        try {
-          result = await model!.decide(transcript, {
-            editorContext,
-            commands: commandsList,
-            filename: editor?.document.fileName,
-            editor: editor || undefined,
-          });
-        } catch (err: any) {
-          const status = (err && (err.status || err.code)) ?? 0;
-          const isRate = status === 429 || /rate/i.test(String(err?.message || err));
-          const msg = isRate
-            ? `Groq rate limit hit: ${String(err?.message || 'Too many requests')}`
-            : `Groq request failed: ${String(err?.message || err)}`;
-
-          console.error('[Mantra] LLM error', err);
-          if (outputChannel) {
-            outputChannel.appendLine(`ERROR: ${msg}`);
-            outputChannel.show(true);
+          if (/(^|\b)(resume|start listening)(\b|$)/.test(t)) {
+            // already running; fall through
           }
-          vscode.window.showErrorMessage(msg);
-          return;
-        }
 
-        if (result.type === 'command') {
-          const phrase = (result.payload || '').toString().trim();
-          const ok =
-            (await handleTextCommand(phrase, context)) ||
-            (await tryExecuteMappedCommand(phrase));
-          if (!ok) vscode.window.showWarningMessage(`Unknown command: ${phrase}`);
-        } else if (result.type === 'modification') {
-          if (!editor) {
-            vscode.window.showWarningMessage('No active editor for modification.');
+          // --- quick command paths ---
+          const maybeHandled = await tryExecuteMappedCommand(transcript);
+          if (maybeHandled) return;
+          if (await handleTextCommand(transcript, context)) return;
+
+          // --- LLM disabled? ---
+          const commandsOnly = vscode.workspace.getConfiguration('mantra').get<boolean>('commandsOnly', false);
+          if (commandsOnly) {
+            vscode.window.setStatusBarMessage('Mantra: commands-only (LLM disabled)', 1500);
+            return;
+          }
+
+          // --- ensure Groq key if needed ---
+          if (!model || !(model as any).hasGroq || !(model as any).hasGroq()) {
+            const ok = await ensureApiKeys(context);
+            if (!ok || !((model as any).hasGroq && (model as any).hasGroq())) return;
+          }
+
+          // --- build routing context ---
+          const editor = vscode.window.activeTextEditor || null;
+          const editorContext = (editor
+            ? [
+              `Active file language: ${editor.document.languageId}`,
+              `Total lines: ${editor.document.lineCount}`,
+            ].join('\n')
+            : '(no active editor)');
+
+          if (!(await warnSensitiveFileAndMaybeProceed())) return;
+
+          const commandsList = canonicalCommandPhrases();
+
+          // --- decide + apply result ---
+          let result: any;
+          try {
+            result = await model!.decide(transcript, {
+              editorContext,
+              commands: commandsList,
+              filename: editor?.document.fileName,
+              editor: editor || undefined,
+            });
+          } catch (err: any) {
+            const status = (err && (err.status || err.code)) ?? 0;
+            const isRate = status === 429 || /rate/i.test(String(err?.message || err));
+            const msg = isRate
+              ? `Groq rate limit hit: ${String(err?.message || 'Too many requests')}`
+              : `Groq request failed: ${String(err?.message || err)}`;
+            console.error('[Mantra] LLM error', err);
+            if (outputChannel) {
+              outputChannel.appendLine(`ERROR: ${msg}`);
+              outputChannel.show(true);
+            }
+            vscode.window.showErrorMessage(msg);
+            return;
+          }
+
+          if (result.type === 'command') {
+            const phrase = (result.payload || '').toString().trim();
+            const ok =
+              (await handleTextCommand(phrase, context)) ||
+              (await tryExecuteMappedCommand(phrase));
+            if (!ok) vscode.window.showWarningMessage(`Unknown command: ${phrase}`);
+          } else if (result.type === 'modification') {
+            if (!editor) {
+              vscode.window.showWarningMessage('No active editor for modification.');
+            } else {
+              const newText = stripMarkdownCodeFence(result.payload ?? '');
+              await replaceDocumentWithHighlight(editor, newText);
+              vscode.window.setStatusBarMessage('Applied modification from LLM', 3000);
+            }
           } else {
-            const newText = stripMarkdownCodeFence(result.payload ?? '');
-            await replaceDocumentWithHighlight(editor, newText);
-            vscode.window.setStatusBarMessage('Applied modification from LLM', 3000);
+            const answer = result.payload;
+            if ((answer || '').toLowerCase().replace(/[^\w\s]/g, '').trim() === 'thank you') return;
+            if (outputChannel && answer) {
+              const sep = '─'.repeat(60);
+              const time = new Date().toLocaleTimeString();
+              const q = transcript.trim();
+              const a = (answer || '').trim();
+              outputChannel.appendLine(`[${time}] Q: ${q}`);
+              outputChannel.appendLine(a);
+              outputChannel.appendLine(sep);
+              outputChannel.show(true);
+            } else {
+              vscode.window.showInformationMessage(answer || '(no answer)');
+            }
           }
-        } else {
-          const answer = result.payload;
-          if ((answer || '').toLowerCase().replace(/[^\w\s]/g, '').trim() === 'thank you') return;
-          if (outputChannel && answer) {
-            const sep = '─'.repeat(60);
-            const time = new Date().toLocaleTimeString();
-            const q = (transcript || '').trim();
-            const a = (answer || '').trim();
-            outputChannel.appendLine(`[${time}] Q: ${q}`);
-            outputChannel.appendLine(a);
-            outputChannel.appendLine(sep);
-            outputChannel.show(true);
-          } else {
-            vscode.window.showInformationMessage(answer || '(no answer)');
-          }
-        }
-      });
+        });
+      } finally {
+        // ALWAYS resolve the toast—even on errors or early returns
+        if (completeProgress) completeProgress();
+        await progressDone;
+      }
 
-      // loop for the next utterance unless paused/stopped
-      if (!recorderActive()) await new Promise(res => setTimeout(res, 25));
+      // small idle so we don't spin if the recorder stops
+      if (!recorderActive()) await new Promise((res) => setTimeout(res, 25));
     }
   });
 
@@ -786,23 +789,181 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   });
 
   const configurePromptDisposable = vscode.commands.registerCommand('mantra.configurePrompt', async () => {
-  try {
-    await vscode.commands.executeCommand('workbench.action.openSettings', 'mantra.prompt');
-  } catch (e) {
-    console.log('Failed to open settings to mantra.prompt; opening Settings UI instead', e);
-    await vscode.commands.executeCommand('workbench.action.openSettings');
-  }});
+    try {
+      await vscode.commands.executeCommand('workbench.action.openSettings', 'mantra.prompt');
+    } catch (e) {
+      console.log('Failed to open settings to mantra.prompt; opening Settings UI instead', e);
+      await vscode.commands.executeCommand('workbench.action.openSettings');
+    }
+  });
 
   const toggleCommandsOnlyDisposable = vscode.commands.registerCommand(
-  'mantra.toggleCommandsOnly',
-  async () => {
+    'mantra.toggleCommandsOnly',
+    async () => {
+      const cfg = vscode.workspace.getConfiguration('mantra');
+      const current = cfg.get<boolean>('commandsOnly', false);
+      await cfg.update('commandsOnly', !current, vscode.ConfigurationTarget.Global);
+      vscode.window.setStatusBarMessage(
+        `Mantra: commands-only ${!current ? 'enabled' : 'disabled'}`,
+        2000
+      );
+    });
+
+  const selectMicDisposable = vscode.commands.registerCommand('mantra.selectMicrophone', async () => {
+    function resolveFfmpegCmd(): string {
+      const env = (process.env.MANTRA_FFMPEG_PATH || '').trim();
+      if (env) return env;
+      const cmd = process.platform === 'win32' ? 'ffmpeg.exe' : 'ffmpeg';
+      try {
+        if (spawnSync(cmd, ['-version'], { encoding: 'utf8' }).status === 0) return cmd;
+      } catch { }
+      const staticPath = (ffmpegStatic as unknown as string) || '';
+      if (staticPath) return staticPath;
+      throw new Error('FFmpeg not found. Install ffmpeg or set MANTRA_FFMPEG_PATH.');
+    }
+
+    // ---------- Windows (DirectShow) ----------
+    function listWindowsDshow(ff: string): string[] {
+      try {
+        const r = spawnSync(ff, ['-hide_banner', '-f', 'dshow', '-list_devices', 'true', '-i', 'dummy'], { encoding: 'utf8' });
+        const out = (r.stdout || '') + (r.stderr || '');
+        const lines = out.split(/\r?\n/);
+        const audioStart = lines.findIndex(l => /DirectShow audio devices/i.test(l));
+        if (audioStart < 0) return [];
+        const devs: string[] = [];
+        for (let i = audioStart + 1; i < lines.length; i++) {
+          const m = lines[i].match(/"([^"]+)"/);
+          if (m) devs.push(m[1]);
+          if (/DirectShow video devices/i.test(lines[i])) break;
+        }
+        return Array.from(new Set(devs));
+      } catch { return []; }
+    }
+
+    // ---------- macOS (AVFoundation) ----------
+    function listMacAvfoundation(ff: string): { items: Array<{ label: string, index: string }>, supported: boolean } {
+      try {
+        const r = spawnSync(ff, ['-hide_banner', '-f', 'avfoundation', '-list_devices', 'true', '-i', ''], { encoding: 'utf8' });
+        const out = (r.stdout || '') + (r.stderr || '');
+        if (/Unknown input format.*avfoundation/i.test(out)) {
+          return { items: [], supported: false };
+        }
+        const lines = out.split(/\r?\n/);
+        const start = lines.findIndex(l => /AVFoundation audio devices/i.test(l));
+        const items: Array<{ label: string, index: string }> = [];
+        if (start >= 0) {
+          for (let i = start + 1; i < lines.length; i++) {
+            const line = lines[i];
+            if (/AVFoundation video devices/i.test(line)) break;
+            // Accept both: [0] Built-in Microphone  OR  [0] "Built-in Microphone"
+            const m = line.match(/\[(\d+)\]\s*(?:"([^"]+)"|(.+))$/);
+            if (m) {
+              const idx = m[1];
+              const name = (m[2] || m[3] || '').trim();
+              if (name) items.push({ index: idx, label: name });
+            }
+          }
+        }
+        return { items, supported: true };
+      } catch { return { items: [], supported: false }; }
+    }
+
+    // ---------- Linux / WSLg (PulseAudio) ----------
+    function listPulseSources(): Array<{ name: string }> {
+      try {
+        const r = spawnSync('pactl', ['list', 'short', 'sources'], { encoding: 'utf8' });
+        if (r.status !== 0) return [];
+        const items: Array<{ name: string }> = [];
+        for (const line of (r.stdout || '').split(/\r?\n/)) {
+          const parts = line.trim().split(/\s+/);
+          if (parts.length >= 2) {
+            const name = parts[1];
+            if (name && !/\.monitor$/.test(name)) items.push({ name });
+          }
+        }
+        return items;
+      } catch { return []; }
+    }
+
     const cfg = vscode.workspace.getConfiguration('mantra');
-    const current = cfg.get<boolean>('commandsOnly', false);
-    await cfg.update('commandsOnly', !current, vscode.ConfigurationTarget.Global);
-    vscode.window.setStatusBarMessage(
-      `Mantra: commands-only ${!current ? 'enabled' : 'disabled'}`,
-      2000
-    );
+    let ff = '';
+    try { ff = resolveFfmpegCmd(); } catch { }
+
+    type MicItem = vscode.QuickPickItem & { args: string };
+    const items: MicItem[] = [];
+
+    if (process.platform === 'win32') {
+      items.push({
+        label: '$(device-camera-microphone) System Default (WASAPI)',
+        description: 'Use the system default input',
+        args: '-f wasapi -i default'
+      });
+      const dshow = ff ? listWindowsDshow(ff) : [];
+      for (const dev of dshow) {
+        const quoted = dev.includes(' ') ? `"${dev}"` : dev;
+        items.push({
+          label: `$(radio-tower) ${dev}`,
+          description: 'DirectShow device',
+          detail: 'FFmpeg: -f dshow -i audio=…',
+          args: `-f dshow -i audio=${quoted}`
+        });
+      }
+    } else if (process.platform === 'darwin') {
+      items.push({
+        label: '$(device-camera-microphone) System Default (AVFoundation)',
+        description: 'Use the system default input',
+        args: '-f avfoundation -i :default'
+      });
+
+      if (ff) {
+        const { items: av, supported } = listMacAvfoundation(ff);
+        if (!supported) {
+          vscode.window.showWarningMessage(
+            'Your FFmpeg does not support AVFoundation. Install a Homebrew FFmpeg and restart VS Code: brew install ffmpeg'
+          );
+        }
+        for (const a of av) {
+          items.push({
+            label: `$(radio-tower) ${a.label}`,
+            description: `AVFoundation index ${a.index}`,
+            detail: 'FFmpeg: -f avfoundation -i :<index>',
+            args: `-f avfoundation -i :${a.index}`
+          });
+        }
+      }
+    } else {
+      items.push({
+        label: '$(device-camera-microphone) Default (PulseAudio)',
+        description: 'Use the default PulseAudio source',
+        args: '-f pulse -i default'
+      });
+      const srcs = listPulseSources();
+      for (const s of srcs) {
+        items.push({
+          label: `$(radio-tower) ${s.name}`,
+          description: 'PulseAudio source',
+          detail: 'FFmpeg: -f pulse -i <source>',
+          args: `-f pulse -i ${s.name}`
+        });
+      }
+    }
+
+    if (items.length === 0) {
+      vscode.window.showErrorMessage('No microphones found. Ensure audio permissions are granted and FFmpeg is installed.');
+      return;
+    }
+
+    const pick = await vscode.window.showQuickPick(items, {
+      placeHolder: 'Select a microphone to use with Mantra',
+      canPickMany: false,
+      ignoreFocusOut: true,
+      matchOnDetail: true,
+      matchOnDescription: true
+    });
+    if (!pick) return;
+
+    await cfg.update('microphoneInput', pick.args, vscode.ConfigurationTarget.Global);
+    vscode.window.setStatusBarMessage(`Mantra mic set: ${pick.label}`, 3000);
   });
 
   const openSettingsCmd = vscode.commands.registerCommand(
@@ -830,6 +991,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     configureAudioDisposable,
     configurePromptDisposable,
     toggleCommandsOnlyDisposable,
+    selectMicDisposable,
     openSettingsCmd,
     editGroqCmd,
     editDeepgramCmd

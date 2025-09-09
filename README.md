@@ -108,3 +108,57 @@ Here's a list of all of the IDE commands that Mantra currently supports. Some co
 - FFmpeg is used automatically if available; there is nothing extra to install.  
 - The extension loads after VS Code startup; listening begins only when you invoke **Mantra: Start Recording**.  
 - All voice control executes standard VS Code commands or safe editor edits; you can always undo changes on your own or just say "undo".
+
+---
+## WSL2 (Windows Subsystem for Linux) — Quick Setup
+
+Mantra works in a **Remote – WSL** window. Use **WSLg** (audio bridge) and a Pulse‑enabled **FFmpeg**.
+
+### Recommended (WSLg enabled)
+1. **Windows PowerShell (Admin)**  
+   ```powershell
+   wsl --update
+   wsl --shutdown
+   ```
+2. **In WSL Ubuntu**  
+   ```bash
+   sudo apt update && sudo apt install -y ffmpeg pulseaudio-utils
+   export MANTRA_FFMPEG_PATH=/usr/bin/ffmpeg
+   code .
+   ```
+3. In VS Code: **Command Palette → “Mantra: Select Microphone”** → choose **Default (PulseAudio)** or a specific device.  
+4. Set **Deepgram API key** → **Mantra: Set Deepgram API Key** → **Mantra: Start Recording**.
+
+### Alternative (no WSLg)
+- Open the folder directly in **Windows VS Code**, **or**
+- Use the Windows mic from WSL:
+  ```bash
+  export MANTRA_FFMPEG_PATH="/mnt/c/ffmpeg/bin/ffmpeg.exe"
+  export MANTRA_AUDIO_INPUT='-f dshow -i audio=Microphone (Your Device Name)'
+  code .
+  ```
+  List Windows device names:
+  ```bash
+  "/mnt/c/ffmpeg/bin/ffmpeg.exe" -hide_banner -f dshow -list_devices true -i dummy
+  ```
+
+### Troubleshooting (fast)
+- **“PulseAudio: Connection refused”** → WSLg not active: `wsl --update` then `wsl --shutdown`.  
+- **“Unknown input format 'pulse'”** → wrong FFmpeg: install Ubuntu ffmpeg and set `MANTRA_FFMPEG_PATH=/usr/bin/ffmpeg`.  
+- **No mics in picker** → enable WSLg and relaunch VS Code from the WSL shell (`code .`).  
+- Logs: **View → Output → Mantra Recorder**.
+
+### Addendum (verify quickly)
+1. Check WSLg: `wsl --version` → should show a **WSLg** line.  
+2. Probe mic in WSL:  
+   ```bash
+   ffmpeg -hide_banner -f pulse -i default -t 2 -f null -
+   ```
+   If it says **Connection refused**, run `wsl --update` then `wsl --shutdown`.  
+3. In VS Code, run **“Mantra: Select Microphone”** and pick a device (not just Default).
+
+### Quality of life
+Persist FFmpeg path for future shells:
+```bash
+echo 'export MANTRA_FFMPEG_PATH=/usr/bin/ffmpeg' >> ~/.bashrc
+```
