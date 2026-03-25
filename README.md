@@ -18,7 +18,7 @@ Discord: https://discord.gg/fmWCScWuUn
 ## What it does
 
 - **Listen & auto-stop:** The audio is streamed to **Deepgram** with a small keyterm list (editor verbs, command phrases, language keywords, and identifiers from the open file) to bias phrase recognition. Mantra can be paused at any time.
-- **Classify with LLM:** Sends the transcript + minimal editor context (including the full file content) to **Groq**. The LLM returns a type:
+- **Classify with LLM:** Sends the transcript + minimal editor context (including the full file content) to **Cerebras**. The LLM returns a type:
   - **command** → runs the VS Code command (over 75 to choose from)
   - **modification** → applies the edit the model specifies to the current file (LLM code modifications are highlighted temporarily in green and red for new and deleted lines respectively)
   - **question** → shows the answer in a separate panel
@@ -33,7 +33,7 @@ See below for examples.
 ### 2) Provide API keys on first run
 
 - **Deepgram** — speech‑to‑text (free since you get $200 free credit and it's extremely cheap, so it'll last months). Get it at https://deepgram.com
-- **Groq** — LLM for processing user instructions (free, can use paid account for higher rate/token limits if needed). Get it at https://groq.com
+- **Cerebras** — LLM for processing user instructions (~3,000 tokens/sec). Get your API key at https://cloud.cerebras.ai
 
 You’ll be prompted the first time; keys are stored in VS Code Secret Storage. You can update them later via the same prompt sequence.
 
@@ -81,7 +81,7 @@ Open **Settings → Extensions → Mantra** to adjust.
 - **When the LLM is used:** Mantra includes the **current file's full code** as context for the model. Mantra also provides a list of all file names to the model.
 - **Secrets & storage:** Your API keys are stored securely in VS Code **Secret Storage**. No keys are written to disk in plaintext by the extension.
 - **On‑screen content:** Transcripts and actions may appear briefly as status messages in VS Code.
-- **For more:** See Deepgram and Groq's privacy policies. **Other than the Deepgram and Groq API usage, Mantra is executed locally on your computer as a VS Code extension and does not collect, save, or share any of your data.** You can set zero data retention for Groq here https://console.groq.com/settings/data-controls.
+- **For more:** See Deepgram and Cerebras's privacy policies. **Other than the Deepgram and Cerebras API usage, Mantra is executed locally on your computer as a VS Code extension and does not collect, save, or share any of your data.**
 
 ---
 

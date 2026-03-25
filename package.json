@@ -58,6 +58,10 @@
         "title": "Mantra: Open Settings"
       },
       {
+        "command": "mantra.editCerebrasApiKey",
+        "title": "Mantra: Set Cerebras API Key"
+      },
+      {
         "command": "mantra.editGroqApiKey",
         "title": "Mantra: Set Groq API Key"
       },
@@ -112,10 +116,35 @@
           "default": false,
           "description": "Bypass the LLM completely. Only run canonical commands and text ops (no code edits, no answers)."
         },
+        "mantra.llmProvider": {
+          "type": "string",
+          "enum": [
+            "cerebras",
+            "groq"
+          ],
+          "default": "groq",
+          "description": "Which LLM provider to use for chat completions."
+        },
         "mantra.groqApiKey": {
           "type": "string",
           "default": "",
           "description": "Groq API key. Leave empty to use the GROQ_API_KEY environment variable.",
+          "scope": "application",
+          "editPresentation": "password"
+        },
+        "mantra.groqModel": {
+          "type": "string",
+          "enum": [
+            "openai/gpt-oss-20b",
+            "openai/gpt-oss-120b"
+          ],
+          "default": "openai/gpt-oss-20b",
+          "description": "Which model to use on Groq. Defaults to gpt-oss-20b (faster). gpt-oss-120b is more capable but slower."
+        },
+        "mantra.cerebrasApiKey": {
+          "type": "string",
+          "default": "",
+          "description": "Cerebras API key. Leave empty to use the CEREBRAS_API_KEY environment variable.",
           "scope": "application",
           "editPresentation": "password"
         },
@@ -160,7 +189,7 @@
   "dependencies": {
     "@deepgram/sdk": "^3.7.0",
     "ffmpeg-static": "^5.1.0",
-    "groq-sdk": "^0.30.0"
+    "@cerebras/cerebras_cloud_sdk": "^1.64.0"
   },
   "devDependencies": {
     "@types/node": "^20.12.12",

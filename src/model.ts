@@ -1,11 +1,15 @@
-import Groq from 'groq-sdk';
+import Cerebras from '@cerebras/cerebras_cloud_sdk';
 import * as vscode from 'vscode';
 import { createClient as createDeepgramClient } from '@deepgram/sdk';
 import { canonicalCommandPhrases } from './commands';
 
 export type ReqType = 'command' | 'modification' | 'question';
 
-export const RESPONSE_MODEL = 'openai/gpt-oss-120b';
+export type LlmProvider = 'cerebras' | 'groq';
+
+// Default models per provider
+export const CEREBRAS_MODEL = 'gpt-oss-120b';
+export const GROQ_MODEL_DEFAULT = 'openai/gpt-oss-20b';
 
 export type RouteResult = { type: ReqType; payload: string; raw: string };
 
@@ -326,13 +330,16 @@ function buildKeytermsFinal(basePool: string[]): string[] {
 
 
 export class Model {
-  private groq: Groq | null = null;
-  private deepgram: ReturnType<typeof createDeepgramClient> | null = null; // TODO see if outdated?
+  private cerebras: Cerebras | null = null;
+  private groqApiKey: string = '';
+  private groqModel: string = GROQ_MODEL_DEFAULT;
+  private deepgram: ReturnType<typeof createDeepgramClient> | null = null;
   private baseKeyterms: string[] = [];
+  private provider: LlmProvider = 'cerebras';
 
   constructor(apiKey: string, deepgramApiKey?: string) {
     if (apiKey) {
-      this.groq = new Groq({ apiKey });
+      this.cerebras = new Cerebras({ apiKey });
     }
     if (deepgramApiKey) {
       this.deepgram = createDeepgramClient(deepgramApiKey);
@@ -340,14 +347,28 @@ export class Model {
     this.baseKeyterms = seedKeytermsBase();
   }
 
-  // NEW: let the extension inject the key later
-  public setGroqApiKey(apiKey: string) {
-    this.groq = apiKey ? new Groq({ apiKey }) : null;
+  public setProvider(provider: LlmProvider) {
+    this.provider = provider;
+    console.log(`[Mantra] LLM provider set to: ${provider}`);
   }
 
-  // (optional but handy)
-  public hasGroq(): boolean {
-    return !!this.groq;
+  public setCerebrasApiKey(apiKey: string) {
+    console.log('[Mantra] Setting Cerebras API key:', apiKey ? `${apiKey.slice(0, 8)}...${apiKey.slice(-4)}` : '(empty)');
+    this.cerebras = apiKey ? new Cerebras({ apiKey }) : null;
+  }
+
+  public setGroqApiKey(apiKey: string) {
+    console.log('[Mantra] Setting Groq API key:', apiKey ? `${apiKey.slice(0, 8)}...${apiKey.slice(-4)}` : '(empty)');
+    this.groqApiKey = apiKey;
+  }
+
+  public setGroqModel(model: string) {
+    this.groqModel = model || GROQ_MODEL_DEFAULT;
+    console.log(`[Mantra] Groq model set to: ${this.groqModel}`);
+  }
+
+  public hasLlm(): boolean {
+    return this.provider === 'cerebras' ? !!this.cerebras : !!this.groqApiKey;
   }
 
   private async chatText(req: {
@@ -355,28 +376,98 @@ export class Model {
     model: string;
     temperature?: number;
   }): Promise<string> {
-    if (!this.groq) {
-      const e: any = new Error('Groq API key missing');
+    if (this.provider === 'groq') {
+      return this.chatTextGroq(req);
+    }
+    return this.chatTextCerebras(req);
+  }
+
+  private async chatTextCerebras(req: {
+    messages: { role: 'user' | 'system' | 'assistant'; content: string }[];
+    model: string;
+    temperature?: number;
+  }): Promise<string> {
+    if (!this.cerebras) {
+      const e: any = new Error('Cerebras API key missing');
       e.status = 401;
-      e.provider = 'groq';
+      e.provider = 'cerebras';
       throw e;
     }
+    const apiKey = (this.cerebras as any)?.apiKey ?? '(unknown)';
+    console.log(`[Mantra] Cerebras request: model=${req.model}, key=${apiKey ? `${String(apiKey).slice(0, 8)}...${String(apiKey).slice(-4)}` : '(empty)'}`);
     try {
-      const res = await this.groq.chat.completions.create({
+      const res = await this.cerebras.chat.completions.create({
         model: req.model,
         temperature: req.temperature ?? 0,
         messages: req.messages,
-        reasoning_effort: ((process.env.MANTRA_REASONING_EFFORT as 'low' | 'medium' | 'high') || 'low'),
-      });
-      const choice = res?.choices?.[0];
+        reasoning_effort: (process.env.MANTRA_REASONING_EFFORT as 'low' | 'medium' | 'high') || 'low',
+      } as any);
+      const timeInfo = (res as any)?.time_info;
+      const completionTokens = (res as any)?.usage?.completion_tokens ?? 0;
+      const completionTime = timeInfo?.completion_time ?? 0;
+      const queueTime = timeInfo?.queue_time ?? 0;
+      const tps = completionTime > 0 ? Math.round(completionTokens / completionTime) : 0;
+      console.log(`[Mantra] Cerebras TPS: ${tps} (${completionTokens} tokens in ${completionTime.toFixed(2)}s, queue: ${queueTime.toFixed(2)}s)`);
+      const choice = (res?.choices as any)?.[0];
       const content = choice?.message?.content ?? '';
       return (content || '').toString().trim();
     } catch (err: any) {
       const status = (err && (err.status || err.code)) ?? 0;
       const e: any = new Error(String(err?.message || err));
       e.status = status;
+      e.provider = 'cerebras';
+      throw e;
+    }
+  }
+
+  private async chatTextGroq(req: {
+    messages: { role: 'user' | 'system' | 'assistant'; content: string }[];
+    model: string;
+    temperature?: number;
+  }): Promise<string> {
+    if (!this.groqApiKey) {
+      const e: any = new Error('Groq API key missing');
+      e.status = 401;
       e.provider = 'groq';
-      throw e; // let the caller decide how to show this
+      throw e;
+    }
+    const modelId = this.groqModel;
+    console.log(`[Mantra] Groq request: model=${modelId}, key=${this.groqApiKey.slice(0, 8)}...${this.groqApiKey.slice(-4)}`);
+    try {
+      const startTime = Date.now();
+      const resp = await fetch('https://api.groq.com/openai/v1/chat/completions', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${this.groqApiKey}`,
+        },
+        body: JSON.stringify({
+          model: modelId,
+          temperature: req.temperature ?? 0,
+          messages: req.messages,
+          reasoning_effort: (process.env.MANTRA_REASONING_EFFORT as 'low' | 'medium' | 'high') || 'low',
+        }),
+      });
+      if (!resp.ok) {
+        const body = await resp.text().catch(() => '');
+        const e: any = new Error(`${resp.status} ${body || resp.statusText}`);
+        e.status = resp.status;
+        e.provider = 'groq';
+        throw e;
+      }
+      const json: any = await resp.json();
+      const elapsedSec = (Date.now() - startTime) / 1000;
+      const completionTokens = json?.usage?.completion_tokens ?? 0;
+      const tps = elapsedSec > 0 ? Math.round(completionTokens / elapsedSec) : 0;
+      console.log(`[Mantra] Groq TPS: ${tps} (${completionTokens} tokens in ${elapsedSec.toFixed(2)}s)`);
+      const content = json?.choices?.[0]?.message?.content ?? '';
+      return (content || '').toString().trim();
+    } catch (err: any) {
+      if (err.provider === 'groq') throw err;
+      const e: any = new Error(String(err?.message || err));
+      e.status = (err && (err.status || err.code)) ?? 0;
+      e.provider = 'groq';
+      throw e;
     }
   }
 
@@ -616,9 +707,10 @@ export class Model {
     parts.push(fullFileStr);
     const user = parts.join('\n');
 
+    const activeModel = this.provider === 'groq' ? this.groqModel : CEREBRAS_MODEL;
     console.log('LLM prompt ready.')
     const raw = await this.chatText({
-      model: RESPONSE_MODEL,
+      model: activeModel,
       temperature: 0,
       messages: [
         { role: 'system', content: system },

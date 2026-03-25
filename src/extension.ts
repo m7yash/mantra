@@ -7,6 +7,7 @@ import ffmpegStatic from 'ffmpeg-static';
 import { spawnSync } from 'child_process';
 
 let model: Model | null = null;
+let cerebrasApiKey: string = '';
 let groqApiKey: string = '';
 let deepgramApiKey: string = '';
 let outputChannel: vscode.OutputChannel | null = null;
@@ -16,13 +17,23 @@ let __mantraPaused = false;
 
 function syncFromSettings() {
   const cfg = vscode.workspace.getConfiguration('mantra');
+  const cerebras = (cfg.get<string>('cerebrasApiKey') || '').trim();
   const groq = (cfg.get<string>('groqApiKey') || '').trim();
   const deep = (cfg.get<string>('deepgramApiKey') || '').trim();
   const effort = (cfg.get<string>('reasoningEffort') || 'low').trim();
+  const provider = (cfg.get<string>('llmProvider') || 'groq').trim();
+  const groqModel = (cfg.get<string>('groqModel') || 'openai/gpt-oss-20b').trim();
 
+  if (cerebras) process.env.CEREBRAS_API_KEY = cerebras;
   if (groq) process.env.GROQ_API_KEY = groq;
   if (deep) process.env.DEEPGRAM_API_KEY = deep;
   process.env.MANTRA_REASONING_EFFORT = effort;
+
+  if (model) {
+    model.setProvider(provider as any);
+    if (groq) model.setGroqApiKey(groq);
+    model.setGroqModel(groqModel);
+  }
 }
 
 const SENSITIVE_FILE_PATTERNS: RegExp[] = [
@@ -525,14 +536,24 @@ async function ensureApiKeys(context: vscode.ExtensionContext): Promise<boolean>
 
   // Ensure we have a model instance for STT even if LLM is off
   if (!model) {
-    // NOTE: pass empty Groq key for now; we’ll set it below if needed
+    // NOTE: pass empty Cerebras key for now; we’ll set it below if needed
     model = new Model('', deepgramApiKey);
   }
 
-  // Groq (chat) — only when LLM is enabled
+  // LLM provider setup — only when LLM is enabled
   if (!commandsOnly) {
-    if (!groqApiKey) {
-      try { groqApiKey = (await context.secrets.get('GROQ_API_KEY')) || ''; } catch { }
+    const cfg = vscode.workspace.getConfiguration('mantra');
+    const provider = (cfg.get<string>('llmProvider') || 'groq').trim();
+    model.setProvider(provider as any);
+
+    if (provider === 'groq') {
+      // Groq API key: 1) settings, 2) env var, 3) secret storage, 4) prompt user
+      const fromSettings = (cfg.get<string>('groqApiKey') || '').trim();
+      if (fromSettings) { groqApiKey = fromSettings; }
+      if (!groqApiKey && process.env.GROQ_API_KEY) { groqApiKey = process.env.GROQ_API_KEY; }
+      if (!groqApiKey) {
+        try { groqApiKey = (await context.secrets.get('GROQ_API_KEY')) || ''; } catch { }
+      }
       if (!groqApiKey) {
         groqApiKey = await vscode.window.showInputBox({
           prompt: 'Enter your Groq API key',
@@ -540,14 +561,38 @@ async function ensureApiKeys(context: vscode.ExtensionContext): Promise<boolean>
           password: true,
         }) || '';
         if (!groqApiKey) {
-          vscode.window.showWarningMessage('GROQ_API_KEY is required to use LLM features.');
+          vscode.window.showWarningMessage('GROQ_API_KEY is required to use Groq LLM features.');
           return false;
         }
-        await context.secrets.store('GROQ_API_KEY', groqApiKey);
       }
+      await context.secrets.store('GROQ_API_KEY', groqApiKey);
+      model.setGroqApiKey(groqApiKey);
+      model.setGroqModel((cfg.get<string>('groqModel') || 'openai/gpt-oss-20b').trim());
+    } else {
+      // Cerebras API key: 1) settings, 2) env var, 3) secret storage, 4) prompt user
+      const fromSettings = (cfg.get<string>('cerebrasApiKey') || '').trim();
+      if (fromSettings) { cerebrasApiKey = fromSettings; }
+      if (!cerebrasApiKey && process.env.CEREBRAS_API_KEY) { cerebrasApiKey = process.env.CEREBRAS_API_KEY; }
+      if (!cerebrasApiKey) {
+        try { cerebrasApiKey = (await context.secrets.get('CEREBRAS_API_KEY')) || ''; } catch { }
+      }
+      if (!cerebrasApiKey) {
+        try { cerebrasApiKey = (await context.secrets.get('GROQ_API_KEY')) || ''; } catch { }
+      }
+      if (!cerebrasApiKey) {
+        cerebrasApiKey = await vscode.window.showInputBox({
+          prompt: 'Enter your Cerebras API key',
+          ignoreFocusOut: true,
+          password: true,
+        }) || '';
+        if (!cerebrasApiKey) {
+          vscode.window.showWarningMessage('CEREBRAS_API_KEY is required to use LLM features.');
+          return false;
+        }
+      }
+      await context.secrets.store('CEREBRAS_API_KEY', cerebrasApiKey);
+      model.setCerebrasApiKey(cerebrasApiKey);
     }
-    // Inject/refresh the key on the live model
-    model.setGroqApiKey(groqApiKey);
   }
 
   return true;
@@ -563,11 +608,25 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   context.subscriptions.push(
     vscode.workspace.onDidChangeConfiguration(e => {
       if (
+        e.affectsConfiguration('mantra.cerebrasApiKey') ||
         e.affectsConfiguration('mantra.groqApiKey') ||
+        e.affectsConfiguration('mantra.groqModel') ||
+        e.affectsConfiguration('mantra.llmProvider') ||
         e.affectsConfiguration('mantra.deepgramApiKey') ||
         e.affectsConfiguration('mantra.reasoningEffort')
       ) {
         syncFromSettings();
+        if (model) {
+          const cfg = vscode.workspace.getConfiguration('mantra');
+          if (e.affectsConfiguration('mantra.cerebrasApiKey')) {
+            const newKey = (cfg.get<string>('cerebrasApiKey') || '').trim();
+            if (newKey) { cerebrasApiKey = newKey; model.setCerebrasApiKey(newKey); }
+          }
+          if (e.affectsConfiguration('mantra.groqApiKey')) {
+            const newKey = (cfg.get<string>('groqApiKey') || '').trim();
+            if (newKey) { groqApiKey = newKey; model.setGroqApiKey(newKey); }
+          }
+        }
       }
     })
   );
@@ -690,10 +749,10 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
             return;
           }
 
-          // --- ensure Groq key if needed ---
-          if (!model || !(model as any).hasGroq || !(model as any).hasGroq()) {
+          // --- ensure LLM key if needed ---
+          if (!model || !model.hasLlm()) {
             const ok = await ensureApiKeys(context);
-            if (!ok || !((model as any).hasGroq && (model as any).hasGroq())) return;
+            if (!ok || !model?.hasLlm()) return;
           }
 
           // --- build routing context ---
@@ -722,8 +781,8 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
             const status = (err && (err.status || err.code)) ?? 0;
             const isRate = status === 429 || /rate/i.test(String(err?.message || err));
             const msg = isRate
-              ? `Groq rate limit hit: ${String(err?.message || 'Too many requests')}`
-              : `Groq request failed: ${String(err?.message || err)}`;
+              ? `Cerebras rate limit hit: ${String(err?.message || 'Too many requests')}`
+              : `Cerebras request failed: ${String(err?.message || err)}`;
             console.error('[Mantra] LLM error', err);
             if (outputChannel) {
               outputChannel.appendLine(`ERROR: ${msg}`);
@@ -971,6 +1030,11 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     () => vscode.commands.executeCommand('workbench.action.openSettings', '@ext:mishra7yash.mantra')
   );
 
+  const editCerebrasCmd = vscode.commands.registerCommand(
+    'mantra.editCerebrasApiKey',
+    () => vscode.commands.executeCommand('workbench.action.openSettings', '@id:mantra.cerebrasApiKey')
+  );
+
   const editGroqCmd = vscode.commands.registerCommand(
     'mantra.editGroqApiKey',
     () => vscode.commands.executeCommand('workbench.action.openSettings', '@id:mantra.groqApiKey')
@@ -981,7 +1045,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     () => vscode.commands.executeCommand('workbench.action.openSettings', '@id:mantra.deepgramApiKey')
   );
 
-  context.subscriptions.push(openSettingsCmd, editGroqCmd, editDeepgramCmd);
+  context.subscriptions.push(openSettingsCmd, editCerebrasCmd, editGroqCmd, editDeepgramCmd);
 
   // Add to subscriptions:
   context.subscriptions.push(
@@ -993,6 +1057,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     toggleCommandsOnlyDisposable,
     selectMicDisposable,
     openSettingsCmd,
+    editCerebrasCmd,
     editGroqCmd,
     editDeepgramCmd
   );
