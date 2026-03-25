@@ -339,8 +339,53 @@ export async function startMicStream(
     chosenInput = buildNonWindowsInputArgs();
   }
 
-  logInfo(`Using input: ${JSON.stringify(chosenInput)}`);
-  status('🎙️ Starting microphone…');
+  // Resolve actual microphone device name from ffmpeg
+  const micName = (() => {
+    const iIdx = chosenInput!.indexOf('-i');
+    const fIdx = chosenInput!.indexOf('-f');
+    const format = fIdx >= 0 && fIdx + 1 < chosenInput!.length ? chosenInput![fIdx + 1] : '';
+    const rawInput = iIdx >= 0 && iIdx + 1 < chosenInput!.length ? chosenInput![iIdx + 1] : '';
+
+    // On macOS, query AVFoundation to resolve index/default to a real name
+    if (format === 'avfoundation') {
+      try {
+        const r = spawnSync(ffmpegCmd, ['-hide_banner', '-f', 'avfoundation', '-list_devices', 'true', '-i', ''], { encoding: 'utf8', timeout: 3000 });
+        const out = (r.stdout || '') + (r.stderr || '');
+        const lines = out.split(/\r?\n/);
+        const audioStart = lines.findIndex(l => /AVFoundation audio devices/i.test(l));
+        if (audioStart >= 0) {
+          // Parse audio index from input — ":default" or ":0" or ":2"
+          const audioIdx = rawInput.replace(/^:/, '');
+          if (audioIdx === 'default' || audioIdx === '') {
+            // First audio device is the default
+            for (let i = audioStart + 1; i < lines.length; i++) {
+              if (/AVFoundation video devices/i.test(lines[i])) break;
+              const m = lines[i].match(/\[\d+\]\s*(?:"([^"]+)"|(.+))$/);
+              if (m) return (m[1] || m[2] || '').trim();
+            }
+          } else {
+            // Find specific index
+            for (let i = audioStart + 1; i < lines.length; i++) {
+              if (/AVFoundation video devices/i.test(lines[i])) break;
+              const m = lines[i].match(/\[(\d+)\]\s*(?:"([^"]+)"|(.+))$/);
+              if (m && m[1] === audioIdx) return (m[2] || m[3] || '').trim();
+            }
+          }
+        }
+      } catch { /* fall through */ }
+      return rawInput || 'default';
+    }
+
+    // On Windows, strip "audio=" prefix for DirectShow names
+    if (format === 'dshow') return rawInput.replace(/^audio=/, '') || 'default';
+    // On Linux, PulseAudio source name
+    if (format === 'pulse') return rawInput || 'default';
+    // Fallback
+    return rawInput || chosenInput!.join(' ');
+  })();
+  logInfo(`Using microphone: ${micName} (raw: ${JSON.stringify(chosenInput)})`);
+  console.log(`[Mantra] 🎙️ Microphone: ${micName}`);
+  status(`🎙️ Mic: ${micName}`);
 
   const ffArgs = [
     ...chosenInput!,

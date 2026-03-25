@@ -3,6 +3,9 @@ import { startMicStream, pauseRecording, recorderActive } from './recorder';
 import { Model } from './model';
 import { canonicalCommandPhrases, tryExecuteMappedCommand } from './commands';
 import { handleCommand as handleTextCommand } from './textOps';
+import { typeInTerminal, executeInTerminal, executeLastTyped } from './terminal';
+import { sendToClaudePanel, focusClaudePanel, acceptClaudeChanges, rejectClaudeChanges, newClaudeConversation } from './claude';
+import { initTerminalHistory, getLastTerminalOutput, formatTerminalContext } from './terminalHistory';
 import ffmpegStatic from 'ffmpeg-static';
 import { spawnSync } from 'child_process';
 
@@ -14,6 +17,19 @@ let outputChannel: vscode.OutputChannel | null = null;
 
 // Track explicit pause state separate from recorder process state
 let __mantraPaused = false;
+
+/** If the prompt references terminal output/errors, attach last terminal context. */
+const TERMINAL_CONTEXT_RE = /\b(error|fix|debug|wrong|fail|broke|broken|crash|issue|bug|output|terminal|what happened|went wrong|doesn't work|not working|won't run)\b/i;
+
+function buildClaudePrompt(prompt: string): string {
+  const entry = getLastTerminalOutput();
+  if (!entry) return prompt;
+  // Include terminal context if prompt references errors/output OR last command failed
+  if (TERMINAL_CONTEXT_RE.test(prompt) || (entry.exitCode !== undefined && entry.exitCode !== 0)) {
+    return prompt + '\n\n' + formatTerminalContext(entry);
+  }
+  return prompt;
+}
 
 function syncFromSettings() {
   const cfg = vscode.workspace.getConfiguration('mantra');
@@ -637,57 +653,17 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 
   const onboarded = context.globalState.get<boolean>('mantra.onboarded');
   if (!onboarded) {
-    const pick = await vscode.window.showInformationMessage(
-      'Set your stop detection (how long of a pause until Mantra knows your instruction is over)?',
-      'Use Balanced',
+    vscode.window.showInformationMessage(
+      'Mantra uses Deepgram Flux for speech recognition with built-in turn detection. Just speak naturally!',
       'Open Settings',
-      'Skip'
-    );
-    if (pick === 'Use Balanced') {
-      const cfg = vscode.workspace.getConfiguration('mantra');
-      await cfg.update('trailingSilenceMs', 1000, vscode.ConfigurationTarget.Global);
-      await cfg.update('leadingSilenceMs', undefined, vscode.ConfigurationTarget.Global);
-      await cfg.update('silenceDb', undefined, vscode.ConfigurationTarget.Global);
-      vscode.window.setStatusBarMessage(
-        'Balanced profile applied (trailing silence only).',
-        3000
-      );
-    } else if (pick === 'Open Settings') {
-      vscode.commands.executeCommand('workbench.action.openSettings', 'mantra.');
-    }
+      'OK'
+    ).then(pick => {
+      if (pick === 'Open Settings') {
+        vscode.commands.executeCommand('workbench.action.openSettings', 'mantra.');
+      }
+    });
     await context.globalState.update('mantra.onboarded', true);
   }
-
-  const configureAudioDisposable = vscode.commands.registerCommand('mantra.configureListening', async () => {
-    const presets = [
-      { label: 'Conservative (no false stops)', detail: 'trailing 3000ms', v: { t: 3000 } },
-      { label: 'Balanced (recommended)', detail: 'trailing 2000ms', v: { t: 2000 } },
-      { label: 'Sensitive (fast stop)', detail: 'trailing 1000ms', v: { t: 1000 } },
-      { label: 'Custom…', detail: 'Enter a trailing silence in milliseconds', v: { t: -1 } },
-    ];
-    const choice = await vscode.window.showQuickPick(presets, { placeHolder: 'Choose a listening profile' });
-    if (!choice) return;
-
-    let trailing = choice.v.t;
-    if (trailing === -1) {
-      const input = await vscode.window.showInputBox({
-        prompt: 'Enter trailing silence (ms) to end an utterance',
-        validateInput: (v) => (/^\d+$/.test(v) && Number(v) >= 100 ? null : 'Enter a number ≥ 100'),
-        value: String(vscode.workspace.getConfiguration('mantra').get('trailingSilenceMs', 1000)),
-      });
-      if (!input) return;
-      trailing = Number(input);
-    }
-
-    const cfg = vscode.workspace.getConfiguration('mantra');
-    await cfg.update('trailingSilenceMs', trailing, vscode.ConfigurationTarget.Global);
-    await cfg.update('leadingSilenceMs', undefined, vscode.ConfigurationTarget.Global);
-    await cfg.update('silenceDb', undefined, vscode.ConfigurationTarget.Global);
-    vscode.window.setStatusBarMessage(
-      `${choice.label} applied (trailing silence only). Legacy settings removed.`,
-      3000
-    );
-  });
 
   const startDisposable = vscode.commands.registerCommand('mantra.start', async () => {
     __mantraPaused = false;
@@ -698,32 +674,43 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     }
     if (!(await ensureApiKeys(context))) return;
 
+    console.log('[Mantra] STT model: Flux');
+
+    // Single progress notification for the whole session — updates in-place
+    // with live transcription, no spam
+    let reportProgress: ((msg: string) => void) | undefined;
+    let endProgress: (() => void) | undefined;
+
+    const progressPromise = vscode.window.withProgress(
+      { location: vscode.ProgressLocation.Notification, title: 'Mantra', cancellable: true },
+      (progress, cancelToken) => new Promise<void>((resolve) => {
+        reportProgress = (msg: string) => progress.report({ message: msg });
+        endProgress = resolve;
+        cancelToken.onCancellationRequested(() => {
+          __mantraPaused = true;
+          pauseRecording();
+          resolve();
+        });
+      })
+    );
+
+    reportProgress?.('Listening...');
+
     // Loop: mic → Deepgram stream → final transcript → route → repeat
     while (!__mantraPaused) {
-      let reportFn: ((msg: string) => void) | undefined;
-      let completeProgress: (() => void) | undefined;
-
-      // Keep a single "Listening..." toast open while we capture + transcribe
-      const progressDone = vscode.window.withProgress(
-        { location: vscode.ProgressLocation.Notification, title: 'Listening...' },
-        (progress) =>
-          new Promise<void>((resolve) => {
-            reportFn = (msg: string) => progress.report({ message: msg });
-            completeProgress = resolve;
-          })
-      );
-
       try {
         await startMicStream(context, async (pcm) => {
-          // Send PCM to Deepgram; stream back partials to the same toast
+          // Send PCM to Deepgram; show live transcription in the notification
           const transcript = await model!.transcribeStream(pcm, (partial) => {
-            if (partial && reportFn) reportFn(partial);
+            if (partial) reportProgress?.(partial);
           });
+
+          // Reset notification after transcription completes
+          reportProgress?.('Listening...');
 
           if (!transcript) return;
 
-          vscode.window.showInformationMessage('Transcribed: ' + transcript);
-          console.log('Transcript: ', transcript);
+          console.log('[Mantra] Transcript: ', transcript);
 
           // --- PAUSE/RESUME interception (pre-LLM) ---
           const t = transcript.trim().toLowerCase();
@@ -735,6 +722,33 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
           }
           if (/(^|\b)(resume|start listening)(\b|$)/.test(t)) {
             // already running; fall through
+          }
+
+          // --- terminal execute shortcut (pre-LLM) ---
+          if (/^(execute|execute that|run that|hit enter|press enter|submit)$/i.test(t)) {
+            executeLastTyped();
+            return;
+          }
+
+          // --- claude shortcut (pre-LLM) ---
+          const claudeMatch = t.match(/^(?:ask claude|tell claude|hey claude|claude)\s+(.+)$/i);
+          if (claudeMatch) {
+            await sendToClaudePanel(buildClaudePrompt(claudeMatch[1]));
+            return;
+          }
+
+          // --- claude panel actions (pre-LLM) ---
+          if (/^(accept|accept changes|accept claude changes)$/i.test(t)) {
+            await acceptClaudeChanges();
+            return;
+          }
+          if (/^(reject|reject changes|reject claude changes)$/i.test(t)) {
+            await rejectClaudeChanges();
+            return;
+          }
+          if (/^(new conversation|new claude conversation|new chat)$/i.test(t)) {
+            await newClaudeConversation();
+            return;
           }
 
           // --- quick command paths ---
@@ -792,7 +806,23 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
             return;
           }
 
-          if (result.type === 'command') {
+          if (result.type === 'terminal') {
+            const shellCmd = (result.payload || '').trim();
+            if (shellCmd) {
+              // Default: execute immediately. Only hold back if user says to wait/not run.
+              const shouldWait = /\b(don'?t (run|execute)|but (wait|hold|don'?t)|and (wait|hold)|just type|type it|don'?t hit enter|wait)\b/i.test(transcript);
+              if (shouldWait) {
+                typeInTerminal(shellCmd);
+              } else {
+                executeInTerminal(shellCmd);
+              }
+            }
+          } else if (result.type === 'claude') {
+            const prompt = (result.payload || '').trim();
+            if (prompt) {
+              await sendToClaudePanel(buildClaudePrompt(prompt));
+            }
+          } else if (result.type === 'command') {
             const phrase = (result.payload || '').toString().trim();
             const ok =
               (await handleTextCommand(phrase, context)) ||
@@ -823,15 +853,29 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
             }
           }
         });
-      } finally {
-        // ALWAYS resolve the toast—even on errors or early returns
-        if (completeProgress) completeProgress();
-        await progressDone;
+      } catch (err: any) {
+        const msg = String(err?.message || err);
+        console.error('[Mantra] Loop iteration error:', msg);
+
+        // Stop retrying on connection/auth errors (400, 401, 403)
+        if (/400|401|403|Unexpected server response|API key/i.test(msg)) {
+          vscode.window.showErrorMessage(`Mantra STT error: ${msg}`);
+          __mantraPaused = true;
+          pauseRecording();
+          break;
+        }
+
+        // For transient errors, wait before retrying
+        await new Promise((res) => setTimeout(res, 2000));
       }
 
       // small idle so we don't spin if the recorder stops
-      if (!recorderActive()) await new Promise((res) => setTimeout(res, 25));
+      if (!recorderActive()) await new Promise((res) => setTimeout(res, 100));
     }
+
+    // Close the progress notification when loop exits
+    if (endProgress) endProgress();
+    await progressPromise;
   });
 
   const pauseDisposable = vscode.commands.registerCommand('mantra.pause', () => {
@@ -1047,19 +1091,27 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 
   context.subscriptions.push(openSettingsCmd, editCerebrasCmd, editGroqCmd, editDeepgramCmd);
 
+  // Track terminal command history for Claude context
+  context.subscriptions.push(...initTerminalHistory());
+
+  // Focus Claude Code sidebar panel
+  const focusClaudeDisposable = vscode.commands.registerCommand('mantra.focusClaude', () => {
+    focusClaudePanel();
+  });
+
   // Add to subscriptions:
   context.subscriptions.push(
     startDisposable,
     pauseDisposable,
     resumeDisposable,
-    configureAudioDisposable,
     configurePromptDisposable,
     toggleCommandsOnlyDisposable,
     selectMicDisposable,
     openSettingsCmd,
     editCerebrasCmd,
     editGroqCmd,
-    editDeepgramCmd
+    editDeepgramCmd,
+    focusClaudeDisposable
   );
 }
 

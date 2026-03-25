@@ -1,9 +1,8 @@
 import Cerebras from '@cerebras/cerebras_cloud_sdk';
 import * as vscode from 'vscode';
-import { createClient as createDeepgramClient } from '@deepgram/sdk';
 import { canonicalCommandPhrases } from './commands';
 
-export type ReqType = 'command' | 'modification' | 'question';
+export type ReqType = 'command' | 'modification' | 'question' | 'terminal' | 'claude';
 
 export type LlmProvider = 'cerebras' | 'groq';
 
@@ -16,16 +15,20 @@ export type RouteResult = { type: ReqType; payload: string; raw: string };
 export function parseLabeledPayload(raw: string): RouteResult {
   const s = (raw || '').trim();
   const fence = s.startsWith('```') ? s.replace(/^```[a-zA-Z]*\n?/, '').replace(/```\s*$/, '') : s;
-  let m = fence.match(/^\s*(question|command|modification)\b\s*([\s\S]*)$/i);
+  const LABELS = 'question|command|modification|terminal|claude';
+  const labelRe = new RegExp(`^\\s*(${LABELS})\\b\\s*([\\s\\S]*)$`, 'i');
+  const lineRe = new RegExp(`^(${LABELS})\\b`, 'i');
+  let m = fence.match(labelRe);
   if (!m) {
-    const line = (fence.split(/\r?\n/).find(l => /^(question|command|modification)\b/i.test(l)) || '').trim();
+    const line = (fence.split(/\r?\n/).find(l => lineRe.test(l)) || '').trim();
     if (line) {
-      m = line.match(/^(question|command|modification)\b\s*([\s\S]*)$/i) as RegExpMatchArray | null;
+      m = line.match(labelRe) as RegExpMatchArray | null;
     }
   }
   const t = (m?.[1] || '').toLowerCase() as ReqType;
   const payload = (m?.[2] || '').replace(/^\s+/, '');
-  const type: ReqType = (t === 'question' || t === 'command' || t === 'modification') ? t : 'question';
+  const VALID: Set<string> = new Set(['question', 'command', 'modification', 'terminal', 'claude']);
+  const type: ReqType = VALID.has(t) ? t : 'question';
   return { type, payload, raw };
 }
 
@@ -243,6 +246,16 @@ function seedKeytermsBase(): string[] {
   ];
   for (const s of cliOps) set.add(s);
 
+  // 4b) Mantra-specific terms — voice control keywords that must be recognized accurately
+  const mantraTerms = [
+    'Claude', 'ask Claude', 'tell Claude', 'hey Claude', 'focus Claude',
+    'execute that', 'run that', 'hit enter', 'press enter',
+    'accept changes', 'reject changes', 'new conversation',
+    'pause', 'resume', 'stop listening', 'start listening',
+    'mantra',
+  ];
+  for (const s of mantraTerms) set.add(s);
+
   // 5) Natural language instruction patterns
   const patterns = [
     'change this to', 'convert this to', 'make this a', 'turn this into', 'rewrite this as',
@@ -333,7 +346,7 @@ export class Model {
   private cerebras: Cerebras | null = null;
   private groqApiKey: string = '';
   private groqModel: string = GROQ_MODEL_DEFAULT;
-  private deepgram: ReturnType<typeof createDeepgramClient> | null = null;
+  private deepgramApiKey: string = '';
   private baseKeyterms: string[] = [];
   private provider: LlmProvider = 'cerebras';
 
@@ -342,7 +355,7 @@ export class Model {
       this.cerebras = new Cerebras({ apiKey });
     }
     if (deepgramApiKey) {
-      this.deepgram = createDeepgramClient(deepgramApiKey);
+      this.deepgramApiKey = deepgramApiKey;
     }
     this.baseKeyterms = seedKeytermsBase();
   }
@@ -471,155 +484,181 @@ export class Model {
     }
   }
 
-  // Inside class Model
+  /**
+   * Transcribe a PCM audio stream using Deepgram Flux (v2/listen).
+   *
+   * Flux is a conversational STT model with built-in end-of-turn detection.
+   * It uses the v2 WebSocket endpoint and emits TurnInfo events with an
+   * `event` field: StartOfTurn, Update, EndOfTurn, EagerEndOfTurn, TurnResumed.
+   *
+   * Auth via Authorization header (Node.js ws library).
+   * 80ms audio chunks are recommended for optimal latency.
+   */
   async transcribeStream(
     input: NodeJS.ReadableStream,
     onInterim?: (partial: string) => void
   ): Promise<string> {
-    const DG: any = await import('@deepgram/sdk');
+    const WS = (await import('ws')).default;
+    const dgKey = this.deepgramApiKey || process.env.DEEPGRAM_API_KEY || '';
+    if (!dgKey) throw new Error('Deepgram API key not set');
 
-    // Reuse an existing client if you stored it on `this`; otherwise, fall back to env
-    const deepgramClient =
-      (this as any)?.deepgram ?? DG.createClient(process.env.DEEPGRAM_API_KEY || '');
-
-    // Prefer any caller-provided model override; default to nova-3
-    const modelName: string = (this as any)?.sttModel || 'nova-3';
-
-    // Build a right-sized keyterm list (<=100 terms, modest token budget)
     const keyterms = buildKeytermsFinal(this.baseKeyterms || []);
 
-    return await new Promise<string>((resolve, reject) => {
-      let finalTranscript = '';
+    // Build v2/listen URL — only params confirmed in Flux docs
+    const params = new URLSearchParams({
+      model: 'flux-general-en',
+      encoding: 'linear16',
+      sample_rate: '16000',
+    });
+    for (const kt of keyterms) params.append('keyterm', kt);
+
+    const url = `wss://api.deepgram.com/v2/listen?${params.toString()}`;
+    // Log URL without keyterms (they're long) for debugging
+    console.log(`[Mantra] Connecting to Flux: wss://api.deepgram.com/v2/listen?model=flux-general-en&encoding=linear16&sample_rate=16000 (+${keyterms.length} keyterms)`);
+
+    return new Promise<string>((resolve, reject) => {
       let settled = false;
+      let transcript = '';  // latest transcript from Flux
+
+      // Auth via Authorization header (correct for Node.js ws library)
+      const ws = new WS(url, {
+        headers: { Authorization: `Token ${dgKey}` },
+      });
+
+      const NOISE_WORDS = new Set([
+        // filler / ambient phantom words
+        'the', 'a', 'an', 'and', 'uh', 'um', 'oh', 'ah', 'hmm', 'huh',
+        'it', 'is', 'i', 'so', 'but', 'or', 'if', 'of', 'in', 'on',
+        // numbers (common phantom detections from ambient noise)
+        'one', 'two', 'three', 'four', 'five', 'six', 'seven', 'eight',
+        'nine', 'ten', 'to', 'too', 'for', 'ate', 'won',
+        // other short noise
+        'yeah', 'yep', 'nah', 'no', 'yes', 'hey', 'hi', 'bye', 'ok',
+      ]);
+      const isNoiseWord = (txt: string): boolean => {
+        if (!txt || !txt.trim()) return true;  // empty = noise
+        const words = txt.trim().split(/\s+/);
+        return words.length === 1 && NOISE_WORDS.has(words[0].toLowerCase());
+      };
 
       const safeResolve = (txt: string) => {
         if (settled) return;
+        if (isNoiseWord(txt)) {
+          console.log('[Mantra] Ignoring noise word:', txt);
+          transcript = '';
+          resetSafety();  // restart timer so we don't hang
+          return;
+        }
         settled = true;
-        try { connection?.close?.(); } catch { /* noop */ }
+        try { ws.close(); } catch { /* noop */ }
         resolve(txt);
       };
       const safeReject = (err: unknown) => {
         if (settled) return;
         settled = true;
-        try { connection?.close?.(); } catch { /* noop */ }
+        try { ws.close(); } catch { /* noop */ }
         reject(err instanceof Error ? err : new Error(String(err)));
       };
 
-      // Read trailing silence (ms) from VS Code settings; default 1000ms, clamp to >=100ms
-      const trailingMsCfg = Math.max(
-        100,
-        Number(vscode.workspace.getConfiguration('mantra').get<number>('trailingSilenceMs', 1000))
-      );
-
-      // Live STT socket options (raw 16kHz mono PCM)
-      const liveOpts: Record<string, any> = {
-        model: 'nova-3',
-        encoding: 'linear16',
-        sample_rate: 16000,
-        channels: 1,
-        interim_results: true,
-        smart_format: true,
-        // ms of silence to end an utterance (Deepgram endpointing)
-        endpointing: trailingMsCfg,
-        // keep finalization guardrail a bit higher than endpointing
-        utterance_end_ms: Math.max(1500, trailingMsCfg + 500),
+      // Safety net: if Flux never fires EndOfTurn (e.g. only silence),
+      // resolve after eot_timeout_ms (default 5000) + buffer.
+      const EOT_SAFETY_MS = 8000;
+      let safetyTimer: NodeJS.Timeout | null = null;
+      const resetSafety = () => {
+        if (safetyTimer) clearTimeout(safetyTimer);
+        safetyTimer = setTimeout(() => {
+          if (!settled) {
+            console.log('[Mantra] Flux safety timeout — resolving with current transcript');
+            safeResolve(transcript);
+          }
+        }, EOT_SAFETY_MS);
       };
 
-      // Send biasing terms:
-      // - nova-3 uses `keyterm` (supports Streaming)
-      // - other models fall back to `keywords` (Streaming-supported, accepts optional boosts)
-      if (Array.isArray(keyterms) && keyterms.length) {
-        if (/^nova-3/.test(modelName)) {
-          // Array -> repeated ?keyterm=params
-          liveOpts.keyterm = keyterms;
-        } else {
-          // Mild boost for non-nova-3 models
-          liveOpts.keywords = keyterms.map(t => `${t}:2`);
-        }
-      }
+      ws.on('unexpected-response', (_req: any, res: any) => {
+        let body = '';
+        res.on('data', (chunk: Buffer) => { body += chunk.toString(); });
+        res.on('end', () => {
+          console.error(`[Mantra] Flux rejected: HTTP ${res.statusCode} — ${body}`);
+          safeReject(new Error(`Deepgram returned ${res.statusCode}: ${body}`));
+        });
+      });
 
-      // Open the websocket
-      const connection = deepgramClient.listen.live(liveOpts);
+      ws.on('error', (e: any) => {
+        console.error('[Mantra] Flux WebSocket error:', e?.message || e);
+        safeReject(e);
+      });
 
-      // Surface socket errors
-      connection.on(DG.LiveTranscriptionEvents.Error, (e: any) => safeReject(e));
+      ws.on('open', () => {
+        console.log('[Mantra] Flux v2 WebSocket connected');
+        resetSafety();
 
-      connection.on(DG.LiveTranscriptionEvents.Open, () => {
-        // Pipe PCM chunks into the socket
+        // Pipe PCM audio into the WebSocket
         input.on('data', (chunk: Buffer) => {
-          if (chunk && chunk.length) {
-            try { connection.send(chunk); } catch { /* ignore backpressure hiccups */ }
+          if (chunk && chunk.length && ws.readyState === WS.OPEN) {
+            try { ws.send(chunk); } catch { /* ignore backpressure */ }
           }
         });
 
-        // When the stream ends, finalize this segment
+        // When mic stream ends, tell Flux to finalize
         input.on('end', () => {
-          try { connection.send(JSON.stringify({ type: 'Finalize' })); } catch { /* noop */ }
+          try {
+            ws.send(JSON.stringify({ type: 'CloseStream' }));
+          } catch { /* noop */ }
         });
 
         input.on('error', (err) => safeReject(err));
+      });
 
-        let utterance = '';
-        let lastTxt = '';
-        let committed = '';
+      ws.on('message', (raw: Buffer | string) => {
+        let msg: any;
+        try { msg = JSON.parse(raw.toString()); } catch { return; }
 
-        let idleTimer: NodeJS.Timeout | null = null;
-        const resetIdle = () => {
-          if (idleTimer) clearTimeout(idleTimer);
-          // Finalize if we stop getting updates for a bit.
-          idleTimer = setTimeout(() => {
-            if (!settled && utterance.trim()) {
-              finalTranscript = utterance.trim();
-              safeResolve(finalTranscript);
-            }
-          }, Math.max(1200, trailingMsCfg + 200)); // small cushion past configured silence
-        };
+        // Flux v2 messages are type "TurnInfo" with an event field
+        const event: string = msg?.event ?? '';
+        const txt: string = (msg?.transcript ?? '').trim();
 
-        const appendWithOverlap = (base: string, next: string) => {
-          if (!base) return next;
-          // longest suffix of base that is a prefix of next
-          const max = Math.min(base.length, next.length);
-          let k = 0;
-          for (let i = max; i > 0; i--) {
-            if (base.endsWith(next.slice(0, i))) { k = i; break; }
-          }
-          return base + next.slice(k);
-        };
+        // Update transcript from every message that has one
+        if (txt) {
+          transcript = txt;
+          resetSafety();
+        }
 
-        connection.on(DG.LiveTranscriptionEvents.Transcript, (msg: any) => {
-          const alt = msg?.channel?.alternatives?.[0];
-          const txt = (alt?.transcript ?? '').trim();
-          if (!txt) return;
+        switch (event) {
+          case 'StartOfTurn':
+            console.log('[Mantra] Flux: StartOfTurn');
+            break;
 
-          // Use Deepgram's semantics: replace interim, append only when is_final
-          const isFinal = msg?.is_final === true;
-          const isSpeechFinal = msg?.speech_final === true;
+          case 'Update':
+            // Interim transcript update — show in notification
+            if (txt && onInterim) onInterim(transcript);
+            break;
 
-          if (isFinal) {
-            // Commit this finalized segment and reset the per-segment buffer
-            committed = committed ? appendWithOverlap(committed, txt) : txt;
-            lastTxt = '';
-            utterance = committed;
-          } else {
-            // Interim: replace the current segment preview (do NOT append)
-            utterance = committed ? (txt ? `${committed} ${txt}` : committed) : txt;
-            lastTxt = txt;
+          case 'EndOfTurn': {
+            console.log('[Mantra] Flux EndOfTurn:', transcript);
+            if (transcript) safeResolve(transcript);
+            break;
           }
 
-          resetIdle();
+          case 'EagerEndOfTurn':
+            // Early speculative signal — log but wait for EndOfTurn
+            console.log('[Mantra] Flux EagerEndOfTurn (confidence:', msg?.end_of_turn_confidence, ')');
+            break;
 
-          if (isSpeechFinal) {
-            finalTranscript = utterance.trim();
-            safeResolve(finalTranscript);
-          } else if (onInterim) {
-            onInterim(utterance);
-          }
-        });
+          case 'TurnResumed':
+            // User started speaking again after a pause — keep listening
+            console.log('[Mantra] Flux: TurnResumed');
+            break;
 
-        // If Deepgram closes the socket, resolve with whatever we have
-        connection.on(DG.LiveTranscriptionEvents.Close, () => {
-          if (!settled) safeResolve(finalTranscript || '');
-        });
+          default:
+            // Unknown or no event — might be a system message
+            break;
+        }
+      });
+
+      ws.on('close', () => {
+        console.log('[Mantra] Flux WebSocket closed');
+        if (safetyTimer) clearTimeout(safetyTimer);
+        if (!settled) safeResolve(transcript);
       });
     });
   }

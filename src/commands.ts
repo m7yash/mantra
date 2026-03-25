@@ -26,7 +26,9 @@ const SPECS: CommandSpec[] = [
   { id: 'workbench.action.files.save', name: 'save', aliases: ['save file', 'save document'], category: 'file' },
   { id: 'workbench.action.files.saveAll', name: 'save all', aliases: ['save all files'], category: 'file' },
   { id: 'workbench.action.files.newUntitledFile', name: 'new file', aliases: ['create file', 'new tab'], category: 'file' },
-  { id: 'workbench.action.closeActiveEditor', name: 'close file', aliases: ['close editor', 'close tab'], category: 'file' },
+  { id: 'workbench.action.closeActiveEditor', name: 'close file', aliases: ['close editor', 'close tab', 'close this file'], category: 'file' },
+  { id: 'workbench.action.closeOtherEditors', name: 'close other files', aliases: ['close other tabs'], category: 'file' },
+  { id: 'workbench.action.closeAllEditors', name: 'close all files', aliases: ['close all tabs', 'close all'], category: 'file' },
   { id: 'workbench.action.reopenClosedEditor', name: 'reopen closed editor', aliases: ['reopen closed tab', 'undo close tab'], category: 'file' },
 
   // Edit (simple)
@@ -94,6 +96,14 @@ const SPECS: CommandSpec[] = [
   { id: 'editor.action.goToImplementation', name: 'go to implementation', category: 'navigate' },
   { id: 'editor.action.jumpToBracket', name: 'jump to bracket', category: 'navigate' },
 
+  // Focus / view
+  { id: 'workbench.action.focusActiveEditorGroup', name: 'focus editor', aliases: ['switch to editor', 'go to editor', 'go to code'], category: 'view' },
+  { id: 'workbench.action.focusFirstEditorGroup', name: 'focus first editor', category: 'view' },
+  { id: 'workbench.action.focusSecondEditorGroup', name: 'focus second editor', category: 'view' },
+  { id: 'workbench.action.focusSideBar', name: 'focus sidebar', aliases: ['switch to sidebar', 'go to sidebar'], category: 'view' },
+  { id: 'workbench.action.focusPanel', name: 'focus panel', aliases: ['switch to panel', 'go to panel'], category: 'view' },
+  { id: 'workbench.action.output.toggleOutput', name: 'toggle output', aliases: ['show output'], category: 'view' },
+
   // View / window
   { id: 'workbench.action.toggleSidebarVisibility', name: 'toggle sidebar', aliases: ['sidebar'], category: 'view' },
   { id: 'workbench.action.togglePanel', name: 'toggle panel', aliases: ['panel'], category: 'view' },
@@ -106,8 +116,14 @@ const SPECS: CommandSpec[] = [
 
   // Terminal
   { id: 'workbench.action.terminal.toggleTerminal', name: 'toggle terminal', aliases: ['terminal'], category: 'terminal' },
-  { id: 'workbench.action.terminal.focus', name: 'focus terminal', category: 'terminal' },
+  { id: 'workbench.action.terminal.focus', name: 'focus terminal', aliases: ['switch to terminal', 'go to terminal'], category: 'terminal' },
   { id: 'workbench.action.terminal.new', name: 'new terminal', category: 'terminal' },
+  { id: 'workbench.action.terminal.focusNext', name: 'next terminal', category: 'terminal' },
+  { id: 'workbench.action.terminal.focusPrevious', name: 'previous terminal', category: 'terminal' },
+  { id: 'mantra.focusClaude', name: 'focus claude', aliases: ['switch to claude', 'go to claude', 'open claude'], category: 'terminal' },
+  { id: 'claude-vscode.newConversation', name: 'new conversation', aliases: ['new claude conversation', 'new chat'], category: 'terminal' },
+  { id: 'claude-vscode.acceptProposedDiff', name: 'accept changes', aliases: ['accept claude changes', 'accept'], category: 'terminal' },
+  { id: 'claude-vscode.rejectProposedDiff', name: 'reject changes', aliases: ['reject claude changes', 'reject'], category: 'terminal' },
 
   // Explorer / palette
   { id: 'workbench.view.explorer', name: 'focus explorer', aliases: ['show explorer', 'open explorer'], category: 'view' },
