@@ -154,26 +154,17 @@ export async function sendToClaudePanel(prompt: string): Promise<void> {
 }
 
 /**
- * Send text directly to Claude (used in passthrough mode).
- * Assumes Claude terminal already exists and is ready.
+ * Type text into the Claude terminal WITHOUT pressing Enter.
+ * Used for passthrough: user's words appear in Claude's input,
+ * then user says "enter" to submit.
  */
-export async function sendDirectToClaude(text: string): Promise<void> {
+export function typeInClaude(text: string): void {
   if (!_claudeTerminal) {
-    // Try to open one
-    const terminal = await ensureClaudeTerminal();
-    if (!terminal) {
-      vscode.window.showWarningMessage('No Claude terminal available.');
-      return;
-    }
-    terminal.show(true);
-    await sleep(500);
-    terminal.sendText(text, true);
-    vscode.window.setStatusBarMessage('→ Claude', 1500);
+    vscode.window.showWarningMessage('No Claude terminal available.');
     return;
   }
-
-  _claudeTerminal.sendText(text, true);
-  vscode.window.setStatusBarMessage('→ Claude', 1500);
+  _claudeTerminal.sendText(text, false); // false = no newline
+  vscode.window.setStatusBarMessage('Typed in Claude', 1500);
 }
 
 /**

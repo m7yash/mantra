@@ -5,12 +5,13 @@ import { canonicalCommandPhrases, tryExecuteMappedCommand } from './commands';
 import { handleCommand as handleTextCommand } from './textOps';
 import { typeInTerminal, executeInTerminal, executeLastTyped } from './terminal';
 import {
-  sendToClaudePanel, confirmClaude,
+  sendToClaudePanel, confirmClaude, typeInClaude,
   focusClaudePanel, acceptClaudeChanges, rejectClaudeChanges,
   isClaudeMode, setClaudeMode, isClaudeTerminalActive,
   claudeResume, claudeNewConversation, claudeSetModel,
   claudeHelp, claudeStatus, claudeCompact, claudeUndo, claudeInterrupt,
 } from './claude';
+import { exec } from 'child_process';
 import { initTerminalHistory, getLastTerminalOutput, getFullTerminalHistory, formatTerminalContext } from './terminalHistory';
 import ffmpegStatic from 'ffmpeg-static';
 import { spawnSync } from 'child_process';
@@ -819,25 +820,72 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
             }
           }
 
-          // --- Claude mode: "enter" to confirm permission prompts ---
-          // No auto-send passthrough. The LLM handles routing to Claude.
-          // "enter" / "yes" / "ok" just presses Enter on Claude's interactive UI.
+          // --- system-level shortcuts (always available, pre-LLM) ---
+          // Keyboard shortcuts
+          {
+            const kbMatch = t.match(/^(?:command|cmd|control|ctrl|alt|option)[\s+]+([a-z0-9])$/i);
+            if (kbMatch) {
+              const key = kbMatch[1].toLowerCase();
+              // Map common Cmd+X shortcuts to VS Code commands
+              const cmdMap: Record<string, string> = {
+                'b': 'workbench.action.toggleSidebarVisibility',
+                'j': 'workbench.action.togglePanel',
+                's': 'workbench.action.files.save',
+                'z': 'undo',
+                'p': 'workbench.action.quickOpen',
+                'w': 'workbench.action.closeActiveEditor',
+                'n': 'workbench.action.files.newUntitledFile',
+                '/': 'editor.action.commentLine',
+              };
+              if (cmdMap[key]) {
+                await vscode.commands.executeCommand(cmdMap[key]);
+                vscode.window.setStatusBarMessage(`⌘${key.toUpperCase()}`, 1500);
+                return;
+              }
+            }
+          }
+          // "click" → just press Enter on whatever is focused
+          if (/^click$/i.test(t)) {
+            if (isClaudeMode() || isClaudeTerminalActive()) {
+              confirmClaude();
+            } else {
+              executeLastTyped();
+            }
+            return;
+          }
+          // Open apps (macOS)
+          {
+            const appMatch = t.match(/^open\s+(.+)$/i);
+            if (appMatch) {
+              const appName = appMatch[1].trim();
+              if (process.platform === 'darwin') {
+                exec(`open -a "${appName}"`, (err) => {
+                  if (err) vscode.window.showWarningMessage(`Could not open "${appName}": ${err.message}`);
+                });
+                vscode.window.setStatusBarMessage(`Opening ${appName}...`, 2000);
+                return;
+              }
+            }
+          }
+
+          // --- Claude mode: "enter"/"yes" to confirm, passthrough typing ---
           if (isClaudeMode() || isClaudeTerminalActive()) {
+            // Enter / confirm
             if (/^(yes|yeah|yep|sure|allow|confirm|go ahead|do it|proceed|ok|okay|enter|select|sounds good)$/i.test(t)) {
               confirmClaude();
               return;
             }
           }
 
-          // --- exit Claude mode / focus management ---
-          if ((isClaudeMode() || isClaudeTerminalActive()) && /^(focus editor|go to editor|go to code|switch to editor|back to editor|back to code|exit claude|leave claude|stop claude mode)$/i.test(t)) {
-            setClaudeMode(false);
-            await vscode.commands.executeCommand('workbench.action.focusActiveEditorGroup');
+          // --- focus management (always available) ---
+          if (/^(focus editor|go to editor|go to code|switch to editor|back to editor|back to code|exit claude|leave claude|stop claude mode)$/i.test(t)) {
+            if (isClaudeMode()) setClaudeMode(false);
+            await vscode.commands.executeCommand('workbench.action.focusFirstEditorGroup');
             vscode.window.setStatusBarMessage('Focused editor', 1500);
             return;
           }
-          if ((isClaudeMode() || isClaudeTerminalActive()) && /^(focus terminal|go to terminal|switch to terminal|back to terminal)$/i.test(t)) {
-            setClaudeMode(false);
+          if (/^(focus terminal|go to terminal|switch to terminal|back to terminal)$/i.test(t)) {
+            if (isClaudeMode()) setClaudeMode(false);
             await vscode.commands.executeCommand('workbench.action.terminal.focus');
             return;
           }
@@ -845,6 +893,14 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
           // --- enter Claude mode explicitly ---
           if (/^(focus claude|switch to claude|go to claude|open claude|claude mode|talk to claude)$/i.test(t)) {
             await focusClaudePanel();
+            return;
+          }
+
+          // --- Claude passthrough: type words into Claude input (no Enter) ---
+          // When Claude mode is active and no shortcut matched, type the user's
+          // exact words into the Claude terminal. User says "enter" to submit.
+          if (isClaudeMode() || isClaudeTerminalActive()) {
+            typeInClaude(transcript);
             return;
           }
 
