@@ -10,13 +10,14 @@ export type LlmProvider = 'cerebras' | 'groq';
 export const CEREBRAS_MODEL = 'gpt-oss-120b';
 export const GROQ_MODEL_DEFAULT = 'openai/gpt-oss-20b';
 
-export type RouteResult = { type: ReqType; payload: string; raw: string };
+export type RouteResult = { type: ReqType; payload: string; raw: string; selectionMode?: boolean };
 
 export function parseLabeledPayload(raw: string): RouteResult {
   const s = (raw || '').trim();
   const fence = s.startsWith('```') ? s.replace(/^```[a-zA-Z]*\n?/, '').replace(/```\s*$/, '') : s;
   const LABELS = 'question|command|modification|terminal|claude|codex|agent';
-  const labelRe = new RegExp(`^\\s*(${LABELS})\\b\\s*([\\s\\S]*)$`, 'i');
+  // Capture EVERYTHING after the label word — do not eat spaces (they may be indentation)
+  const labelRe = new RegExp(`^\\s*(${LABELS})\\b([\\s\\S]*)$`, 'i');
   const lineRe = new RegExp(`^(${LABELS})\\b`, 'i');
   let m = fence.match(labelRe);
   if (!m) {
@@ -26,7 +27,28 @@ export function parseLabeledPayload(raw: string): RouteResult {
     }
   }
   const t = (m?.[1] || '').toLowerCase() as ReqType;
-  const payload = (m?.[2] || '').replace(/^\s+/, '');
+  const rawPayload = m?.[2] || '';
+
+  let payload: string;
+  if (t === 'modification') {
+    // For modifications: preserve indentation carefully.
+    // Case 1: "modification\n    code" or "modification \n    code"
+    //   → strip spaces on label line + newline → "    code" (indentation preserved)
+    // Case 2: "modification    code" (same line, no newline)
+    //   → strip only a single space separator → "   code" (best effort)
+    const stripped = rawPayload.replace(/^[ \t]*\n/, '');
+    if (stripped !== rawPayload) {
+      // Had a newline — indentation is preserved
+      payload = stripped;
+    } else {
+      // No newline — content on same line. Strip single space separator only.
+      payload = rawPayload.replace(/^ /, '');
+    }
+  } else {
+    // For non-modification types: strip all leading whitespace
+    payload = rawPayload.replace(/^\s+/, '');
+  }
+
   const VALID: Set<string> = new Set(['question', 'command', 'modification', 'terminal', 'claude', 'codex', 'agent']);
   const type: ReqType = VALID.has(t) ? t : 'question';
   return { type, payload, raw };
@@ -256,6 +278,9 @@ function seedKeytermsBase(): string[] {
     'accept changes', 'reject changes', 'new conversation',
     'pause', 'resume', 'stop listening', 'start listening',
     'mantra',
+    'this function', 'this class', 'this method', 'this block',
+    'this loop', 'this if statement', 'this variable',
+    'select this function', 'select this class', 'select this method',
   ];
   for (const s of mantraTerms) set.add(s);
 
@@ -392,6 +417,7 @@ export class Model {
     messages: { role: 'user' | 'system' | 'assistant'; content: string }[];
     model: string;
     temperature?: number;
+    reasoning_effort?: 'low' | 'medium' | 'high';
   }): Promise<string> {
     if (this.provider === 'groq') {
       return this.chatTextGroq(req);
@@ -403,6 +429,7 @@ export class Model {
     messages: { role: 'user' | 'system' | 'assistant'; content: string }[];
     model: string;
     temperature?: number;
+    reasoning_effort?: 'low' | 'medium' | 'high';
   }): Promise<string> {
     if (!this.cerebras) {
       const e: any = new Error('Cerebras API key missing');
@@ -417,7 +444,7 @@ export class Model {
         model: req.model,
         temperature: req.temperature ?? 0,
         messages: req.messages,
-        reasoning_effort: (process.env.MANTRA_REASONING_EFFORT as 'low' | 'medium' | 'high') || 'low',
+        reasoning_effort: req.reasoning_effort ?? ((process.env.MANTRA_REASONING_EFFORT as 'low' | 'medium' | 'high') || 'low'),
       } as any);
       const timeInfo = (res as any)?.time_info;
       const completionTokens = (res as any)?.usage?.completion_tokens ?? 0;
@@ -441,6 +468,7 @@ export class Model {
     messages: { role: 'user' | 'system' | 'assistant'; content: string }[];
     model: string;
     temperature?: number;
+    reasoning_effort?: 'low' | 'medium' | 'high';
   }): Promise<string> {
     if (!this.groqApiKey) {
       const e: any = new Error('Groq API key missing');
@@ -448,7 +476,7 @@ export class Model {
       e.provider = 'groq';
       throw e;
     }
-    const modelId = this.groqModel;
+    const modelId = req.model || this.groqModel;
     console.log(`[Mantra] Groq request: model=${modelId}, key=${this.groqApiKey.slice(0, 8)}...${this.groqApiKey.slice(-4)}`);
     try {
       const startTime = Date.now();
@@ -462,7 +490,7 @@ export class Model {
           model: modelId,
           temperature: req.temperature ?? 0,
           messages: req.messages,
-          reasoning_effort: (process.env.MANTRA_REASONING_EFFORT as 'low' | 'medium' | 'high') || 'low',
+          reasoning_effort: req.reasoning_effort ?? ((process.env.MANTRA_REASONING_EFFORT as 'low' | 'medium' | 'high') || 'low'),
         }),
       });
       if (!resp.ok) {
@@ -674,6 +702,85 @@ export class Model {
     });
   }
 
+  /**
+   * Selection model: determines the scope (line range) for an utterance.
+   * Returns 'select' (user wants to highlight code), 'range' (modify a region),
+   * or 'full' (whole-file modification or non-modification).
+   * Always uses the fast model with low reasoning effort.
+   */
+  async selectRange(
+    utterance: string,
+    ctx: {
+      editor: vscode.TextEditor;
+      filename?: string;
+    }
+  ): Promise<{ action: 'select' | 'range' | 'full'; startLine?: number; endLine?: number }> {
+    const doc = ctx.editor.document;
+    const pos = ctx.editor.selection.active;
+
+    // Build numbered file content
+    const whole = doc.getText();
+    const lines = whole.split('\n');
+    const MAX_CHARS = 100000;
+    let numbered = '';
+    for (let i = 0; i < lines.length; i++) {
+      const line = `${i + 1}: ${lines[i]}\n`;
+      if (numbered.length + line.length > MAX_CHARS) {
+        numbered += `[truncated at line ${i + 1}]\n`;
+        break;
+      }
+      numbered += line;
+    }
+
+    const selInfo = ctx.editor.selection.isEmpty
+      ? ''
+      : `Current selection: lines ${ctx.editor.selection.start.line + 1}–${ctx.editor.selection.end.line + 1}`;
+
+    const user = [
+      `Voice command: "${utterance}"`,
+      `Cursor: line ${pos.line + 1}, column ${pos.character + 1}`,
+      selInfo,
+      `File: ${ctx.filename || '(unknown)'}`,
+      `Language: ${doc.languageId}`,
+      `Total lines: ${doc.lineCount}`,
+      '',
+      numbered,
+    ].filter(Boolean).join('\n');
+
+    const cfg = vscode.workspace.getConfiguration('mantra');
+    const selectionPrompt = (cfg.get<string>('selectionPrompt') ?? '').trim();
+
+    // Use the configured selection model (falls back to default)
+    const selModel = this.provider === 'groq'
+      ? (cfg.get<string>('groqSelectionModel') || GROQ_MODEL_DEFAULT)
+      : CEREBRAS_MODEL;
+
+    try {
+      const raw = await this.chatText({
+        model: selModel,
+        temperature: 0,
+        reasoning_effort: 'low',
+        messages: [
+          { role: 'system', content: selectionPrompt },
+          { role: 'user', content: user },
+        ],
+      });
+      console.log('[Mantra] Selection model raw:', raw);
+
+      const trimmed = (raw || '').trim().toLowerCase();
+      const m = trimmed.match(/^(select|range)\s+(\d+)\s+(\d+)/);
+      if (m) {
+        const startLine = Math.max(1, Math.min(parseInt(m[2], 10), doc.lineCount));
+        const endLine = Math.max(startLine, Math.min(parseInt(m[3], 10), doc.lineCount));
+        return { action: m[1] as 'select' | 'range', startLine, endLine };
+      }
+      return { action: 'full' };
+    } catch (err) {
+      console.warn('[Mantra] Selection model failed (falling back to full):', err);
+      return { action: 'full' };
+    }
+  }
+
   async decide(
     utterance: string,
     ctx: {
@@ -777,6 +884,83 @@ export class Model {
     }
 
     parts.push(fullFileStr);
+
+    // --- Selection mode: if user has text selected, instruct LLM to output only the replacement ---
+    let isSelectionMode = false;
+    if (ctx.editor && !ctx.editor.selection.isEmpty) {
+      const sel = ctx.editor.selection;
+      const doc = ctx.editor.document;
+      // Expand to full lines
+      const startLine = sel.start.line;
+      const endLine = sel.end.line;
+      const selectedText = doc.getText(new vscode.Range(
+        new vscode.Position(startLine, 0),
+        new vscode.Position(endLine, doc.lineAt(endLine).text.length)
+      ));
+      const selLines = selectedText.split('\n');
+      // Compute base indentation (minimum indent of non-empty lines)
+      let baseIndent = '';
+      let minLen = Infinity;
+      for (const line of selLines) {
+        if (line.trim() === '') continue;
+        const indent = (line.match(/^(\s*)/) ?? ['', ''])[1];
+        if (indent.length < minLen) { minLen = indent.length; baseIndent = indent; }
+      }
+      // Context: a few lines before and after
+      const ctxBefore = startLine > 0
+        ? doc.getText(new vscode.Range(
+            new vscode.Position(Math.max(0, startLine - 3), 0),
+            new vscode.Position(startLine, 0)
+          )).trimEnd()
+        : '(start of file)';
+      const ctxAfter = endLine < doc.lineCount - 1
+        ? doc.getText(new vscode.Range(
+            new vscode.Position(endLine + 1, 0),
+            new vscode.Position(Math.min(doc.lineCount - 1, endLine + 3), doc.lineAt(Math.min(doc.lineCount - 1, endLine + 3)).text.length)
+          )).trimEnd()
+        : '(end of file)';
+      const indentDesc = baseIndent.length === 0 ? 'no indentation'
+        : baseIndent.includes('\t') ? `${baseIndent.length} tab(s)`
+        : `${baseIndent.length} spaces`;
+
+      parts.push('');
+      parts.push('⚠️ SELECTION MODE ⚠️');
+      parts.push(`The user has lines ${startLine + 1}–${endLine + 1} selected. For a modification, output ONLY the replacement for the selected text — do NOT output the entire file. The full file above is for context only.`);
+      parts.push('');
+      parts.push(`Selected text (lines ${startLine + 1}–${endLine + 1}, to be replaced):`);
+      parts.push('```');
+      parts.push(selectedText);
+      parts.push('```');
+      parts.push('');
+      parts.push('Context before selection:');
+      parts.push('```');
+      parts.push(ctxBefore);
+      parts.push('```');
+      parts.push('');
+      parts.push('Context after selection:');
+      parts.push('```');
+      parts.push(ctxAfter);
+      parts.push('```');
+      parts.push('');
+      parts.push(`CRITICAL OUTPUT FORMAT FOR SELECTION MODE:`);
+      parts.push(`Your response MUST look exactly like this (the code goes on the NEXT line after the label):`);
+      parts.push(`modification`);
+      parts.push(`<replacement code with exact indentation>`);
+      parts.push(``);
+      parts.push(`CRITICAL INDENTATION RULES:`);
+      parts.push(`1. The selected text uses ${indentDesc} as its base indentation ("${baseIndent}").`);
+      parts.push(`2. Every line of your replacement MUST start with EXACTLY the same whitespace as the corresponding original line.`);
+      parts.push(`3. Do NOT strip or reduce indentation. Do NOT add extra indentation. Copy the whitespace character-for-character.`);
+      parts.push(`4. The FIRST line of your output must start with "${baseIndent}" — not at column 0.`);
+      parts.push(`Example: if the selected text is:`);
+      parts.push(`        if x > 0:`);
+      parts.push(`            print(x)`);
+      parts.push(`Then your output must also start each line with 8 spaces — never less.`);
+
+      isSelectionMode = true;
+      console.log('[Mantra] Selection mode active: lines %d-%d', startLine + 1, endLine + 1);
+    }
+
     const user = parts.join('\n');
 
     const activeModel = this.provider === 'groq' ? this.groqModel : CEREBRAS_MODEL;
@@ -792,8 +976,25 @@ export class Model {
     console.log('Received raw LLM response.')
     const parsed = parseLabeledPayload(raw);
     if (!parsed?.payload) {
-      throw new RouteFormatError('Model returned no payload. Raw: ' + raw);
+      if (isSelectionMode) {
+        // In selection mode, empty payload after a valid label means "delete the selection"
+        if (parsed.type === 'modification') {
+          console.log('[Mantra] Selection mode: empty modification payload (deletion)');
+          parsed.payload = '';
+        } else if (raw.trim()) {
+          // LLM skipped the label entirely — strip any accidental label prefix and use as modification
+          console.log('[Mantra] Selection mode fallback: treating raw response as modification');
+          parsed.type = 'modification';
+          const stripped = raw.trim().replace(/^(question|command|modification|terminal|agent)\s*/i, '');
+          parsed.payload = stripped;
+        } else {
+          throw new RouteFormatError('Model returned no payload. Raw: ' + raw);
+        }
+      } else {
+        throw new RouteFormatError('Model returned no payload. Raw: ' + raw);
+      }
     }
+    if (isSelectionMode) parsed.selectionMode = true;
     return parsed;
   }
 

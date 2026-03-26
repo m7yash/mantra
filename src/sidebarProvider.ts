@@ -17,10 +17,12 @@ export interface SidebarState {
   testing?: boolean;      // mic test mode
   routerPrompt?: string;  // main LLM system prompt
   memoryPrompt?: string;  // memory manager system prompt
+  selectionPrompt?: string; // selection model system prompt
   agentBackend?: string;  // 'claude' | 'codex'
   agentInstalled?: boolean; // whether selected agent CLI is installed
   llmProvider?: string;   // 'groq' | 'cerebras'
-  llmModel?: string;      // active model id
+  llmModel?: string;      // active router model id
+  selectionModel?: string; // active selection model id
   commandsOnly?: boolean; // commands-only mode toggle
 }
 
@@ -34,6 +36,7 @@ export class MantraSidebarProvider implements vscode.WebviewViewProvider {
   private _onAgentChange?: (agent: string) => void;
   private _onProviderChange?: (provider: string) => void;
   private _onModelChange?: (model: string) => void;
+  private _onSelectionModelChange?: (model: string) => void;
   private _onInstallAgent?: () => void;
 
   constructor(private readonly _extensionUri: vscode.Uri) {}
@@ -61,6 +64,11 @@ export class MantraSidebarProvider implements vscode.WebviewViewProvider {
   /** Register a callback for when the user changes the LLM model. */
   public onModelChange(cb: (model: string) => void): void {
     this._onModelChange = cb;
+  }
+
+  /** Register a callback for when the user changes the selection model. */
+  public onSelectionModelChange(cb: (model: string) => void): void {
+    this._onSelectionModelChange = cb;
   }
 
   /** Register a callback for when the user clicks the install button. */
@@ -118,6 +126,10 @@ export class MantraSidebarProvider implements vscode.WebviewViewProvider {
       } else if (msg.type === 'modelChange') {
         if (this._onModelChange && typeof msg.model === 'string') {
           this._onModelChange(msg.model);
+        }
+      } else if (msg.type === 'selectionModelChange') {
+        if (this._onSelectionModelChange && typeof msg.model === 'string') {
+          this._onSelectionModelChange(msg.model);
         }
       } else if (msg.type === 'installAgent') {
         if (this._onInstallAgent) {
@@ -547,8 +559,15 @@ export class MantraSidebarProvider implements vscode.WebviewViewProvider {
     </select>
   </div>
   <div style="padding:2px 0;">
-    <div style="font-size:11px;color:var(--vscode-descriptionForeground);padding:2px 0;">Model</div>
+    <div style="font-size:11px;color:var(--vscode-descriptionForeground);padding:2px 0;">Router Model</div>
     <select id="modelSelect" class="dropdown">
+      <option value="openai/gpt-oss-20b">GPT-OSS 20B (fast)</option>
+      <option value="openai/gpt-oss-120b">GPT-OSS 120B (capable)</option>
+    </select>
+  </div>
+  <div style="padding:2px 0;">
+    <div style="font-size:11px;color:var(--vscode-descriptionForeground);padding:2px 0;">Selection Model</div>
+    <select id="selectionModelSelect" class="dropdown">
       <option value="openai/gpt-oss-20b">GPT-OSS 20B (fast)</option>
       <option value="openai/gpt-oss-120b">GPT-OSS 120B (capable)</option>
     </select>
@@ -607,6 +626,9 @@ export class MantraSidebarProvider implements vscode.WebviewViewProvider {
   <div class="section-label">Memory Manager Prompt</div>
   <textarea class="prompt-area" id="memoryPrompt" spellcheck="false" placeholder="Loading..."></textarea>
 
+  <div class="section-label">Selection Model Prompt</div>
+  <textarea class="prompt-area" id="selectionPrompt" spellcheck="false" placeholder="Loading..."></textarea>
+
   <script>
     const vscode = acquireVsCodeApi();
     let listening = false;
@@ -627,6 +649,7 @@ export class MantraSidebarProvider implements vscode.WebviewViewProvider {
     const memoryText = document.getElementById('memoryText');
     const routerPromptEl = document.getElementById('routerPrompt');
     const memoryPromptEl = document.getElementById('memoryPrompt');
+    const selectionPromptEl = document.getElementById('selectionPrompt');
     const logWrap = document.getElementById('logWrap');
     const logEmpty = document.getElementById('logEmpty');
     const agentSelect = document.getElementById('agentSelect');
@@ -635,6 +658,7 @@ export class MantraSidebarProvider implements vscode.WebviewViewProvider {
     const installBtn = document.getElementById('installBtn');
     const providerSelect = document.getElementById('providerSelect');
     const modelSelect = document.getElementById('modelSelect');
+    const selectionModelSelect = document.getElementById('selectionModelSelect');
     const focusAgentLabel = document.getElementById('focusAgentLabel');
     const cmdOnlyHint = document.getElementById('cmdOnlyHint');
 
@@ -677,18 +701,26 @@ export class MantraSidebarProvider implements vscode.WebviewViewProvider {
       updateModelOptions(providerSelect.value);
     });
 
-    // Model dropdown
+    // Model dropdowns
     modelSelect.addEventListener('change', () => {
       vscode.postMessage({ type: 'modelChange', model: modelSelect.value });
+    });
+    selectionModelSelect.addEventListener('change', () => {
+      vscode.postMessage({ type: 'selectionModelChange', model: selectionModelSelect.value });
     });
 
     function updateModelOptions(provider) {
       modelSelect.innerHTML = '';
+      selectionModelSelect.innerHTML = '';
       if (provider === 'groq') {
-        modelSelect.innerHTML = '<option value="openai/gpt-oss-20b">GPT-OSS 20B (fast)</option>'
+        const opts = '<option value="openai/gpt-oss-20b">GPT-OSS 20B (fast)</option>'
           + '<option value="openai/gpt-oss-120b">GPT-OSS 120B (capable)</option>';
+        modelSelect.innerHTML = opts;
+        selectionModelSelect.innerHTML = opts;
       } else {
-        modelSelect.innerHTML = '<option value="gpt-oss-120b">GPT-OSS 120B</option>';
+        const opts = '<option value="gpt-oss-120b">GPT-OSS 120B</option>';
+        modelSelect.innerHTML = opts;
+        selectionModelSelect.innerHTML = opts;
       }
     }
 
@@ -765,6 +797,10 @@ export class MantraSidebarProvider implements vscode.WebviewViewProvider {
         memoryPromptEl.value = msg.memoryPrompt;
       }
 
+      if (msg.selectionPrompt !== undefined) {
+        selectionPromptEl.value = msg.selectionPrompt;
+      }
+
       if (msg.agentBackend !== undefined) {
         agentSelect.value = msg.agentBackend;
         const label = msg.agentBackend === 'codex' ? 'Codex' : 'Claude';
@@ -788,6 +824,10 @@ export class MantraSidebarProvider implements vscode.WebviewViewProvider {
 
       if (msg.llmModel !== undefined) {
         modelSelect.value = msg.llmModel;
+      }
+
+      if (msg.selectionModel !== undefined) {
+        selectionModelSelect.value = msg.selectionModel;
       }
 
       if (msg.commandsOnly !== undefined) {
@@ -839,6 +879,7 @@ export class MantraSidebarProvider implements vscode.WebviewViewProvider {
     }
     debouncePrompt(routerPromptEl, 'prompt');
     debouncePrompt(memoryPromptEl, 'memoryPrompt');
+    debouncePrompt(selectionPromptEl, 'selectionPrompt');
 
     vscode.postMessage({ type: 'ready' });
   </script>

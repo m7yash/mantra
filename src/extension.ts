@@ -690,7 +690,7 @@ async function replaceDocumentWithHighlight(
   editor.setDecorations(movedType, movedRanges);
 
   // Dispose after a short delay to prevent leaks & visual clutter
-  const DISPOSE_MS = 3500;
+  const DISPOSE_MS = 5000;
   setTimeout(() => {
     try {
       // Clear first (not strictly required since dispose removes them)
@@ -707,6 +707,8 @@ async function replaceDocumentWithHighlight(
 
 function stripMarkdownCodeFence(text: string): string {
   if (!text) return text;
+  // Use trimmed version ONLY for fence detection, not for the final return.
+  // Trimming would strip leading indentation which is critical in selection mode.
   const t = text.trim();
 
   // Exact fenced block: ```lang\n...code...\n```
@@ -725,7 +727,56 @@ function stripMarkdownCodeFence(text: string): string {
   m = t.match(/^~~~[a-zA-Z0-9+_.-]*\n([\s\S]*?)\n~~~$/);
   if (m) return m[1];
 
-  return t;
+  // No fences found — return original with only trailing whitespace stripped,
+  // preserving leading indentation (critical for selection-mode edits).
+  return text.replace(/\s+$/, '');
+}
+
+// ─── Selection-mode helpers ─────────────────────────────────────────────────
+
+/**
+ * Replace only the selected range and highlight the changes.
+ */
+async function replaceSelectionWithHighlight(
+  editor: vscode.TextEditor,
+  selection: vscode.Selection,
+  newText: string
+): Promise<void> {
+  // Expand to full lines for a clean replacement
+  const doc = editor.document;
+  const startLine = selection.start.line;
+  const endLine = selection.end.line;
+  const replaceRange = endLine < doc.lineCount - 1
+    ? new vscode.Range(new vscode.Position(startLine, 0), new vscode.Position(endLine + 1, 0))
+    : new vscode.Range(new vscode.Position(startLine, 0), new vscode.Position(endLine, doc.lineAt(endLine).text.length));
+
+  // Ensure new text ends with newline when replacing full lines (unless at end of file)
+  let textToInsert = newText;
+  if (endLine < doc.lineCount - 1 && !textToInsert.endsWith('\n')) {
+    textToInsert += '\n';
+  }
+
+  await editor.edit((eb) => eb.replace(replaceRange, textToInsert));
+
+  // Highlight the replaced region
+  const insertedLines = textToInsert.split('\n');
+  const lastInsertedLine = startLine + insertedLines.length - (textToInsert.endsWith('\n') ? 2 : 1);
+  const highlightEnd = Math.min(Math.max(startLine, lastInsertedLine), doc.lineCount - 1);
+
+  const addedType = vscode.window.createTextEditorDecorationType({
+    isWholeLine: true,
+    backgroundColor: new vscode.ThemeColor('diffEditor.insertedLineBackground'),
+    overviewRulerColor: new vscode.ThemeColor('diffEditorOverview.insertedForeground'),
+  });
+  const range = new vscode.Range(
+    new vscode.Position(startLine, 0),
+    editor.document.lineAt(highlightEnd).range.end
+  );
+  editor.setDecorations(addedType, [{ range }]);
+
+  setTimeout(() => {
+    try { editor.setDecorations(addedType, []); } finally { addedType.dispose(); }
+  }, 5000);
 }
 
 async function ensureApiKeys(context: vscode.ExtensionContext): Promise<boolean> {
@@ -930,9 +981,10 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 
           if (!transcript) return;
 
-          // Fix common Deepgram misrecognition: "codecs" → "codex"
-          // Deepgram often hears "codex" as "codecs" since it's a more common English word
+          // Fix common Deepgram misrecognitions
           transcript = transcript.replace(/\bcodecs\b/gi, 'codex');
+          transcript = transcript.replace(/\bdysfunction\b/gi, 'this function');
+          transcript = transcript.replace(/\bdis function\b/gi, 'this function');
 
           // Secondary noise filter — catch anything the STT noise gate missed
           // In agent mode, allow yes/no/yeah/ok through (needed for permission prompts)
@@ -1191,6 +1243,54 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 
           if (!(await warnSensitiveFileAndMaybeProceed())) return;
 
+          // --- selection model: determine scope before main routing ---
+          // If user already has text selected, skip the selection model and
+          // go straight to decide() which will activate SELECTION MODE.
+          let scopeHighlight: vscode.TextEditorDecorationType | null = null;
+          if (editor && editor.selection.isEmpty) {
+            try {
+              const scope = await model!.selectRange(transcript, {
+                editor,
+                filename: editor.document.fileName,
+              });
+              console.log('[Mantra] Selection model result:', scope);
+
+              if (scope.action === 'select' && scope.startLine && scope.endLine) {
+                // Pure selection command — select lines and stop
+                const startPos = new vscode.Position(scope.startLine - 1, 0);
+                const endLine = Math.min(scope.endLine - 1, editor.document.lineCount - 1);
+                const endPos = new vscode.Position(endLine, editor.document.lineAt(endLine).text.length);
+                editor.selection = new vscode.Selection(startPos, endPos);
+                editor.revealRange(new vscode.Range(startPos, endPos), vscode.TextEditorRevealType.InCenterIfOutsideViewport);
+                pushLog('command', `Selected lines ${scope.startLine}–${scope.endLine}`);
+                return;
+              }
+
+              if (scope.action === 'range' && scope.startLine && scope.endLine) {
+                // Scoped modification — set selection and show gray highlight
+                const startPos = new vscode.Position(scope.startLine - 1, 0);
+                const endLine = Math.min(scope.endLine - 1, editor.document.lineCount - 1);
+                const endPos = new vscode.Position(endLine, editor.document.lineAt(endLine).text.length);
+                editor.selection = new vscode.Selection(startPos, endPos);
+
+                // Show subtle gray highlight while the main model runs
+                scopeHighlight = vscode.window.createTextEditorDecorationType({
+                  isWholeLine: true,
+                  backgroundColor: 'rgba(128, 128, 128, 0.12)',
+                });
+                editor.setDecorations(scopeHighlight, [{
+                  range: new vscode.Range(startPos, endPos),
+                }]);
+                console.log('[Mantra] Scoped range: lines %d–%d', scope.startLine, scope.endLine);
+              }
+              // scope.action === 'full' → no selection, proceed normally
+            } catch (err) {
+              console.warn('[Mantra] Selection model error (proceeding with full):', err);
+            }
+          } else if (editor && !editor.selection.isEmpty) {
+            console.log('[Mantra] Pre-existing selection detected — skipping selection model, using SELECTION MODE');
+          }
+
           const commandsList = canonicalCommandPhrases();
 
           // --- decide + apply result ---
@@ -1207,9 +1307,10 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
           } catch (err: any) {
             const status = (err && (err.status || err.code)) ?? 0;
             const isRate = status === 429 || /rate/i.test(String(err?.message || err));
+            const provLabel = (vscode.workspace.getConfiguration('mantra').get<string>('llmProvider') || 'groq').trim();
             const msg = isRate
-              ? `Cerebras rate limit hit: ${String(err?.message || 'Too many requests')}`
-              : `Cerebras request failed: ${String(err?.message || err)}`;
+              ? `${provLabel} rate limit hit: ${String(err?.message || 'Too many requests')}`
+              : `${provLabel} request failed: ${String(err?.message || err)}`;
             console.error('[Mantra] LLM error', err);
             if (outputChannel) {
               outputChannel.appendLine(`ERROR: ${msg}`);
@@ -1218,6 +1319,13 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
             vscode.window.showErrorMessage(msg);
             pushLog('error', msg);
             return;
+          } finally {
+            // Clear scope highlight once main model finishes
+            if (scopeHighlight) {
+              try { editor?.setDecorations(scopeHighlight, []); } catch {}
+              scopeHighlight.dispose();
+              scopeHighlight = null;
+            }
           }
 
           if (result.type === 'terminal') {
@@ -1259,6 +1367,26 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
           } else if (result.type === 'modification') {
             if (!editor) {
               vscode.window.showWarningMessage('No active editor for modification.');
+            } else if (result.selectionMode && !editor.selection.isEmpty) {
+              // --- Selection mode: replace only the selected region ---
+              const sel = editor.selection;
+              const startLine = sel.start.line;
+              const endLine = sel.end.line;
+              const originalText = editor.document.getText(new vscode.Range(
+                new vscode.Position(startLine, 0),
+                new vscode.Position(endLine, editor.document.lineAt(endLine).text.length)
+              ));
+              const rawPayload = stripMarkdownCodeFence(result.payload ?? '');
+              const filename = editor.document.fileName.split(/[\\/]/).pop() || 'file';
+              const diff = makeUnifiedDiff(originalText, rawPayload, filename);
+
+              await replaceSelectionWithHighlight(editor, sel, rawPayload);
+              // Clear the blue text selection so it doesn't linger after the edit
+              const newPos = new vscode.Position(startLine, 0);
+              editor.selection = new vscode.Selection(newPos, newPos);
+
+              vscode.window.setStatusBarMessage('Applied selection modification from LLM', 3000);
+              pushLog('modification', `Modified selection in ${filename} (lines ${startLine + 1}–${endLine + 1})`, diff || undefined);
             } else {
               const oldText = editor.document.getText();
               const newText = stripMarkdownCodeFence(result.payload ?? '');
@@ -1616,6 +1744,16 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     console.log(`[Mantra] LLM model changed to: ${modelId}`);
   });
 
+  // Selection model change from sidebar
+  sidebar.onSelectionModelChange((modelId) => {
+    const cfg = vscode.workspace.getConfiguration('mantra');
+    const provider = cfg.get<string>('llmProvider') || 'groq';
+    if (provider === 'groq') {
+      cfg.update('groqSelectionModel', modelId, vscode.ConfigurationTarget.Global);
+    }
+    console.log(`[Mantra] Selection model changed to: ${modelId}`);
+  });
+
   // Install agent from sidebar
   sidebar.onInstallAgent(() => {
     const agent = getSelectedAgent();
@@ -1632,15 +1770,18 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     const agent = cfg.get<string>('agentBackend') || 'claude';
     const provider = cfg.get<string>('llmProvider') || 'groq';
     const groqModel = cfg.get<string>('groqModel') || 'openai/gpt-oss-20b';
+    const groqSelModel = cfg.get<string>('groqSelectionModel') || 'openai/gpt-oss-20b';
     const installed = agent === 'claude' ? true : checkCliInstalled('codex');
     const cmdOnly = cfg.get<boolean>('commandsOnly', false);
     sidebar.postState({
       routerPrompt: cfg.get<string>('prompt') || '',
       memoryPrompt: cfg.get<string>('memoryPrompt') || '',
+      selectionPrompt: cfg.get<string>('selectionPrompt') || '',
       agentBackend: agent,
       agentInstalled: installed,
       llmProvider: provider,
       llmModel: groqModel,
+      selectionModel: groqSelModel,
       commandsOnly: cmdOnly,
     });
   }
