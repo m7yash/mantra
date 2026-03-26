@@ -893,14 +893,14 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
             }
           }
 
-          // --- focus management (always available) ---
-          if (/^(focus editor|go to editor|go to code|switch to editor|back to editor|back to code|exit claude|leave claude|stop claude mode)$/i.test(t)) {
+          // --- focus management (always available, use tc for punctuation tolerance) ---
+          if (/^(focus editor|go to editor|go to code|switch to editor|back to editor|back to code|exit claude|leave claude|stop claude mode|go back|go back to editor)$/i.test(tc)) {
             if (isClaudeMode()) setClaudeMode(false);
             await vscode.commands.executeCommand('workbench.action.focusFirstEditorGroup');
             vscode.window.setStatusBarMessage('Focused editor', 1500);
             return;
           }
-          if (/^(focus terminal|go to terminal|switch to terminal|back to terminal)$/i.test(t)) {
+          if (/^(focus terminal|go to terminal|switch to terminal|back to terminal)$/i.test(tc)) {
             if (isClaudeMode()) setClaudeMode(false);
             await vscode.commands.executeCommand('workbench.action.terminal.focus');
             return;
@@ -909,14 +909,6 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
           // --- enter Claude mode explicitly ---
           if (/^(focus claude|switch to claude|go to claude|open claude|claude mode|talk to claude)$/i.test(t)) {
             await focusClaudePanel();
-            return;
-          }
-
-          // --- Claude passthrough: type words into Claude input (no Enter) ---
-          // When Claude mode is active and no shortcut matched, type the user's
-          // exact words into the Claude terminal. User says "enter" to submit.
-          if (isClaudeMode() || isClaudeTerminalActive()) {
-            typeInClaude(transcript);
             return;
           }
 
@@ -991,7 +983,14 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
           } else if (result.type === 'claude') {
             const prompt = (result.payload || '').trim();
             if (prompt) {
-              await sendToClaudePanel(buildClaudePrompt(prompt));
+              if (isClaudeMode() || isClaudeTerminalActive()) {
+                // Already at Claude terminal — type without Enter.
+                // User says "enter" to submit.
+                typeInClaude(prompt);
+              } else {
+                // Not at Claude — open terminal and auto-submit.
+                await sendToClaudePanel(buildClaudePrompt(prompt));
+              }
             }
           } else if (result.type === 'command') {
             const phrase = (result.payload || '').toString().trim();
@@ -1008,19 +1007,25 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
               vscode.window.setStatusBarMessage('Applied modification from LLM', 3000);
             }
           } else {
-            const answer = result.payload;
-            if ((answer || '').toLowerCase().replace(/[^\w\s]/g, '').trim() === 'thank you') return;
-            if (outputChannel && answer) {
-              const sep = '─'.repeat(60);
-              const time = new Date().toLocaleTimeString();
-              const q = transcript.trim();
-              const a = (answer || '').trim();
-              outputChannel.appendLine(`[${time}] Q: ${q}`);
-              outputChannel.appendLine(a);
-              outputChannel.appendLine(sep);
-              outputChannel.show(true);
+            // "question" type — if Claude is active, type into Claude;
+            // otherwise show answer in the output panel.
+            if (isClaudeMode() || isClaudeTerminalActive()) {
+              typeInClaude(transcript);
             } else {
-              vscode.window.showInformationMessage(answer || '(no answer)');
+              const answer = result.payload;
+              if ((answer || '').toLowerCase().replace(/[^\w\s]/g, '').trim() === 'thank you') return;
+              if (outputChannel && answer) {
+                const sep = '─'.repeat(60);
+                const time = new Date().toLocaleTimeString();
+                const q = transcript.trim();
+                const a = (answer || '').trim();
+                outputChannel.appendLine(`[${time}] Q: ${q}`);
+                outputChannel.appendLine(a);
+                outputChannel.appendLine(sep);
+                outputChannel.show(true);
+              } else {
+                vscode.window.showInformationMessage(answer || '(no answer)');
+              }
             }
           }
 

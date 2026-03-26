@@ -2,7 +2,7 @@
 
 Code with your thoughts, not your keyboard. Extremely accurate, absurdly fast.
 
-Mantra listens to your instructions and instantly either edits your code ("add a helper function to handle my database queries"), runs an IDE command ("undo"), or answers your question about the code ("how do I make sure this is thread-safe?").
+Mantra listens to your voice and instantly edits code, runs IDE commands, executes terminal commands, interacts with Claude Code, or answers your questions — all hands-free.
 
 Get started for free!
 
@@ -15,150 +15,220 @@ Discord: https://discord.gg/fmWCScWuUn
 
 ---
 
-## What it does
+## How It Works
 
-- **Listen & auto-stop:** The audio is streamed to **Deepgram** with a small keyterm list (editor verbs, command phrases, language keywords, and identifiers from the open file) to bias phrase recognition. Mantra can be paused at any time.
-- **Classify with LLM:** Sends the transcript + minimal editor context (including the full file content) to **Cerebras**. The LLM returns a type:
-  - **command** → runs the VS Code command (over 75 to choose from)
-  - **modification** → applies the edit the model specifies to the current file (LLM code modifications are highlighted temporarily in green and red for new and deleted lines respectively)
-  - **question** → shows the answer in a separate panel
-
-See below for examples.
+1. **Speech-to-text:** Audio is streamed to **Deepgram Flux** (conversational STT with built-in turn detection). A keyterm list biases recognition toward programming vocabulary and identifiers from your open file.
+2. **LLM routing:** The transcript + editor context + terminal history + conversation memory is sent to **Groq** (or Cerebras). The LLM classifies the instruction and returns one of five types:
+   - **command** — runs a VS Code command (75+ supported)
+   - **modification** — applies an edit to the current file (changes are highlighted in green/red)
+   - **question** — shows the answer in a separate panel
+   - **terminal** — translates natural language to a shell command and executes it
+   - **claude** — forwards an intelligent, context-aware prompt to Claude Code
+3. **Pre-LLM shortcuts:** Common phrases like "undo", "save", "enter", "focus editor", and keyboard shortcuts are handled instantly without waiting for the LLM.
 
 ---
 
-## Setup (takes <4 minutes)
+## Setup
+
 ### 1) Install Mantra from the VS Code Marketplace
 
 ### 2) Provide API keys on first run
 
-- **Deepgram** — speech‑to‑text (free since you get $200 free credit and it's extremely cheap, so it'll last months). Get it at https://deepgram.com
-- **Cerebras** — LLM for processing user instructions (~3,000 tokens/sec). Get your API key at https://cloud.cerebras.ai
+- **Deepgram** — speech-to-text. Get a key at https://deepgram.com (free $200 credit).
+- **Groq** (recommended) or **Cerebras** — LLM routing. Get a key at https://console.groq.com or https://cloud.cerebras.ai
 
-You’ll be prompted the first time; keys are stored in VS Code Secret Storage. You can update them later via the same prompt sequence.
+You'll be prompted the first time. Keys are stored in VS Code Secret Storage.
 
 ### 3) Start!
 
-- Run **“Mantra: Start Recording”** (Command Palette) or use the keyboard shortcut (below).  
-- Speak short phrases like:
-  - “**create a terminal based tic tac toe game**”
-  - “**what does this function do?**”
-  - “**change this to a while loop**”
-  - “**put getters and setters**”
-  - “**create a helper function to validate the user input**”
-  - “**undo**”
-  - “**select lines 4 to 19**”
-  - “**for i in range len nums print nums i**”
-  - “**new line above**”
-  - “**open utils dot java**”
+Run **"Mantra: Start Recording"** from the Command Palette or press `Ctrl+Shift+1`.
 
-**Pause / Resume:** say “pause” / “resume”, or run **Mantra: Pause Listening** / **Mantra: Resume Listening**. See keyboard shortcuts below.
+---
+
+## What You Can Say
+
+### Code editing
+- "create a terminal-based tic tac toe game"
+- "change this to a while loop"
+- "add a helper function to validate user input"
+- "put getters and setters"
+- "for i in range len nums print nums i" (raw code dictation)
+
+### Questions
+- "what does this function do?"
+- "how should I refactor this?"
+- "explain this line"
+
+### IDE commands
+- "undo", "redo", "save", "format document"
+- "close this file", "open utils dot java"
+- "select lines 4 to 19", "go to line 20"
+- "toggle sidebar", "zen mode", "zoom in"
+- "focus editor", "focus terminal", "focus explorer"
+
+### Terminal commands
+- "run this file" → `python3 main.py`
+- "create a virtual environment" → `python3 -m venv venv`
+- "install the requests library" → `pip3 install requests`
+- "check git status" → `git status`
+
+Terminal commands are **executed by default**. If you want to just type without executing, say something like "create a virtual environment **but don't run it**" or "type it out **and wait**".
+
+### Keyboard shortcuts (macOS)
+Any modifier+key combo spoken naturally is executed via the system:
+- "command B" → Cmd+B
+- "control shift P" → Ctrl+Shift+P
+- "command shift F" → Cmd+Shift+F
+
+### Other system actions
+- "click" → simulates pressing Enter/Return
+- "open Safari", "open Chrome" → launches the app (macOS)
+- "enter" → presses Enter in whatever is focused
+
+### Pause / Resume
+Say "pause" or "stop listening" to pause. Say "resume" or use `Ctrl+Shift+3` to resume.
+
+---
+
+## Claude Code Integration
+
+Mantra integrates with the [Claude Code VS Code extension](https://marketplace.visualstudio.com/items?itemName=anthropic.claude-code). You need:
+1. The Claude Code VS Code extension installed
+2. The `claude` CLI available in your PATH (the extension can install this, or run: `echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.zshrc && source ~/.zshrc`)
+
+### Sending prompts to Claude
+Say "ask Claude to refactor this function" or "tell Claude to add unit tests". Mantra's LLM uses conversation memory and terminal history to craft a context-aware prompt — so you can say vague things like "ask Claude how to fix that" and it will resolve "that" to whatever you were just working on.
+
+### When Claude is running
+While the Claude terminal is active:
+- **Commands still work normally** — "save file", "undo", "focus terminal" all execute as usual
+- **Questions and conversation go to Claude** — "how do I fix this error?" types into Claude
+- **"enter"** — presses Enter (confirms permission prompts, submits input)
+- **"up" / "down"** — arrow keys for navigating Claude's selection menus
+- **"yes" / "ok" / "go ahead"** — confirms the current selection
+- **"focus editor" / "go back"** — switches back to the editor
+- **"focus claude" / "open claude"** — switches to (or opens) the Claude terminal
+
+### Claude CLI commands (voice)
+- "new conversation" / "clear conversation"
+- "resume conversation"
+- "set model to [model name]"
+- "claude status", "claude help"
+- "compact conversation"
+- "undo that" (Claude undo)
+- "stop" / "interrupt" / "cancel" (sends Ctrl+C)
+- "accept changes" / "reject changes" (for proposed diffs)
+
+---
+
+## Conversation Memory
+
+Mantra maintains a running memory of your session. After each interaction, the LLM updates a summary that includes what you asked, what actions were taken, file context, and terminal output. This means later instructions can reference earlier ones naturally — "do the same thing for the other file", "ask Claude how to fix that error from before", etc.
+
+---
+
+## Terminal History Tracking
+
+Mantra automatically captures terminal commands and their output via VS Code shell integration. This history is:
+- Included as context for the LLM (so it knows what you just ran and what happened)
+- Used when forwarding to Claude (so Claude can see errors and output)
+- Stored for the session (up to 50 commands)
 
 ---
 
 ## Commands & Keyboard Shortcuts
 
-- **Start Recording** — `Ctrl+Shift+1`  
-- **Pause Listening** — `Ctrl+Shift+2`  
-- **Resume Listening** — `Ctrl+Shift+3`  
-- **Open Mantra settings** — `Ctrl+Shift+4`
+- **Start Recording** — `Ctrl+Shift+1`
+- **Pause Listening** — `Ctrl+Shift+2`
+- **Resume Listening** — `Ctrl+Shift+3`
+- **Open Settings** — `Ctrl+Shift+4`
+- **Select Microphone** — `Ctrl+Shift+5`
 
 ---
 
-## Settings (tune for your mic/environment)
-- **Trailing silence (ms)** — default **300**: how long of silence ends the clip (raise to avoid cut‑offs).
-- **Prompt** — Change the default LLM prompt to whatever you would like.
-- **Commands Only** - Opt out of any LM usage. Note that this requires you to use commands exactly as they appear in the list below. For example, you would have to say "redo" instead of "let's redo" since the LLM will not be used to understand your intent.
+## Settings
 
-Open **Settings → Extensions → Mantra** to adjust.
+Open **Settings > Extensions > Mantra** to adjust:
+
+- **LLM Provider** — Choose between **Groq** (default) or **Cerebras**.
+- **Groq Model** — `openai/gpt-oss-20b` (faster, default) or `openai/gpt-oss-120b` (more capable).
+- **Reasoning Effort** — Low (default), medium, or high.
+- **Prompt** — Customize the LLM system prompt.
+- **Commands Only** — Bypass the LLM entirely. Only pre-mapped commands work (you must say the exact command phrase).
+- **Microphone Input** — Set via Command Palette > "Mantra: Select Microphone". Advanced users can paste raw FFmpeg input args.
 
 ---
 
 ## Privacy and Data Handling (Important)
 
-- **Your responsibility:** Avoid dictating passwords, tokens, or proprietary text you do not want transmitted. Disconnect the keys or pause listening if you need to work offline. DO NOT USE MANTRA WHEN EDITING FILES WITH SENSITIVE INFORMATION SUCH AS CREDENTIALS OR API KEYS. Such information will be sent to the LLM. If Mantra detects that your file may have sensitive information (using regex pattern matching), it will warn you before sending the text to the LLM. Note that this may not catch all cases.
-- **What hints are sent to the speech model:** A small list of **keyterms** (command phrases, language keywords, and **identifiers pulled from the current file**) is sent to Deepgram to bias recognition. This list contains words/phrases—not full source code.
-- **When the LLM is used:** Mantra includes the **current file's full code** as context for the model. Mantra also provides a list of all file names to the model.
-- **Secrets & storage:** Your API keys are stored securely in VS Code **Secret Storage**. No keys are written to disk in plaintext by the extension.
-- **On‑screen content:** Transcripts and actions may appear briefly as status messages in VS Code.
-- **For more:** See Deepgram and Cerebras's privacy policies. **Other than the Deepgram and Cerebras API usage, Mantra is executed locally on your computer as a VS Code extension and does not collect, save, or share any of your data.**
+- **Your responsibility:** Do not dictate passwords, tokens, or proprietary text you don't want transmitted. Pause listening when working with sensitive files. DO NOT USE MANTRA WHEN EDITING FILES WITH SENSITIVE CREDENTIALS. If Mantra detects sensitive information in your file, it will warn you before sending it to the LLM.
+- **What goes to the speech model:** A small list of keyterms (command phrases, language keywords, identifiers from the open file) is sent to Deepgram to bias recognition. No full source code is sent to Deepgram.
+- **What goes to the LLM:** The current file's full contents, file name, cursor context, terminal history, and conversation memory.
+- **Secrets & storage:** API keys are stored in VS Code Secret Storage. No keys are written to disk in plaintext.
+- **For more:** See Deepgram's and Groq's/Cerebras's privacy policies. Other than the API usage described above, Mantra runs entirely locally and does not collect, save, or share any of your data.
 
 ---
 
 ## Troubleshooting
- 
-- **No mic on macOS** — Allow **Visual Studio Code** under *System Settings → Privacy & Security → Microphone*.  
-- **Clipped transcripts** — Increase *Trailing silence (ms)* (e.g., 1000–1500) or lower the *Silence threshold* (e.g., −40).  
-- **File not found** — Include punctuation words when speaking filenames: “**open auth dot controller dot ts**”.
+
+- **No mic on macOS** — Allow VS Code under *System Settings > Privacy & Security > Microphone*.
+- **"Command not found: claude"** — Add the CLI to your PATH: `echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.zshrc && source ~/.zshrc`
+- **Ghost transcriptions ("two", "four")** — These are filtered automatically. If ambient noise is high, consider adjusting your microphone position.
+- **File not found** — Include punctuation words when speaking filenames: "open auth dot controller dot ts".
+- **Logs** — Check **View > Output > Mantra** for detailed logs including which microphone is being used.
 
 ---
 
-## Commands
+## Supported IDE Commands
 
-If the user instruction is exactly equivalent to a premapped VS Code command (ie "redo"), Mantra may be able to execute that instead of checking with the LLM to see if the instruction is a command, what command would it be. However, if the user were to say something like "actually let's redo that", the LLM would be used to classify this as a command and so that the redo could be executed.
+Over 75 pre-mapped VS Code commands. You can say these exactly or use natural variations (the LLM understands intent):
 
-Here's a list of all of the IDE commands that Mantra currently supports. Some commands, such as cut, copy, paste, *may not* work reliably yet.
-
-> add breakpoint, add cursor above, add cursor below, add next occurrence, back, block comment, close editor, close file, command palette, continue, continue debugging, copy, copy selection, create file, cut, cut selection, duplicate line, duplicate line down, duplicate line up, duplicate lines up, expand selection, find, find and replace, find in editor, find in files, first tab, fix, focus debug, focus explorer, focus extensions, focus search, focus source control, focus terminal, fold all, format document, format file, format selection, forward, go back, go forward, go to definition, go to implementation, go to references, goto definition, jump to bracket, line comment, minimap, move line down, move line up, move lines down, move lines up, new file, new terminal, next editor, next tab, open file, organize imports, page down, page up, panel, peek definition, prev tab, previous tab, quick fix, quick open, redo, rename, rename symbol, reopen closed editor, reopen closed tab, replace, replace in files, reset zoom, save, save all, save all files, save file, scroll down one page, scroll up one page, second tab, select all, select next occurrence, show command palette, show debug, show explorer, show extensions, show references, show search, show source control, shrink selection, sidebar, split editor, start debugging, step into, step out, step over, stop debugging, tab eight, tab five, tab four, tab nine, tab one, tab seven, tab six, tab three, tab two, terminal, toggle block comment, toggle breakpoint, toggle line comment, toggle minimap, toggle panel, toggle sidebar, toggle terminal, toggle word wrap, toggle zen mode, undo, unfold all, word wrap, zen mode, zoom in, zoom out, zoom reset.
+> save, save all, new file, close file, close other files, close all files, reopen closed editor, undo, redo, cut, copy, select all, toggle line comment, toggle block comment, format document, format selection, rename symbol, quick fix, organize imports, expand selection, shrink selection, select next occurrence, duplicate line down, duplicate line up, move line up, move line down, add cursor above, add cursor below, fold all, unfold all, toggle word wrap, find, replace, find in files, replace in files, back, forward, next tab, previous tab, tab one through tab nine, page up, page down, go to definition, peek definition, go to references, go to implementation, jump to bracket, focus editor, focus first editor, focus second editor, focus sidebar, focus panel, toggle output, toggle sidebar, toggle panel, toggle zen mode, split editor, toggle minimap, zoom in, zoom out, reset zoom, toggle terminal, focus terminal, new terminal, next terminal, previous terminal, focus claude, new conversation, accept changes, reject changes, focus explorer, focus search, focus source control, focus debug, focus extensions, show command palette, quick open, toggle breakpoint, start debugging, stop debugging, continue debugging, step over, step into, step out.
 
 ---
 
-## Notes
-
-- FFmpeg is used automatically if available; there is nothing extra to install.  
-- The extension loads after VS Code startup; listening begins only when you invoke **Mantra: Start Recording**.  
-- All voice control executes standard VS Code commands or safe editor edits; you can always undo changes on your own or just say "undo".
-
----
 ## WSL2 (Windows Subsystem for Linux) — Quick Setup
 
-Mantra works in a **Remote – WSL** window. Use **WSLg** (audio bridge) and a Pulse‑enabled **FFmpeg**.
+Mantra works in a **Remote - WSL** window. Use **WSLg** (audio bridge) and a Pulse-enabled **FFmpeg**.
 
 ### Recommended (WSLg enabled)
-1. **Windows PowerShell (Admin)**  
+1. **Windows PowerShell (Admin)**
    ```powershell
    wsl --update
    wsl --shutdown
    ```
-2. **In WSL Ubuntu**  
+2. **In WSL Ubuntu**
    ```bash
    sudo apt update && sudo apt install -y ffmpeg pulseaudio-utils
    export MANTRA_FFMPEG_PATH=/usr/bin/ffmpeg
    code .
    ```
-3. In VS Code: **Command Palette → “Mantra: Select Microphone”** → choose **Default (PulseAudio)** or a specific device.  
-4. Set **Deepgram API key** → **Mantra: Set Deepgram API Key** → **Mantra: Start Recording**.
+3. In VS Code: **Command Palette > "Mantra: Select Microphone"** > choose a device.
+4. Set API keys and start recording.
 
 ### Alternative (no WSLg)
-- Open the folder directly in **Windows VS Code**, **or**
+- Open the folder directly in **Windows VS Code**, or
 - Use the Windows mic from WSL:
   ```bash
   export MANTRA_FFMPEG_PATH="/mnt/c/ffmpeg/bin/ffmpeg.exe"
   export MANTRA_AUDIO_INPUT='-f dshow -i audio=Microphone (Your Device Name)'
   code .
   ```
-  List Windows device names:
-  ```bash
-  "/mnt/c/ffmpeg/bin/ffmpeg.exe" -hide_banner -f dshow -list_devices true -i dummy
-  ```
 
-### Troubleshooting (fast)
-- **“PulseAudio: Connection refused”** → WSLg not active: `wsl --update` then `wsl --shutdown`.  
-- **“Unknown input format 'pulse'”** → wrong FFmpeg: install Ubuntu ffmpeg and set `MANTRA_FFMPEG_PATH=/usr/bin/ffmpeg`.  
-- **No mics in picker** → enable WSLg and relaunch VS Code from the WSL shell (`code .`).  
-- Logs: **View → Output → Mantra Recorder**.
+### Troubleshooting (WSL)
+- **"PulseAudio: Connection refused"** — WSLg not active: `wsl --update` then `wsl --shutdown`.
+- **"Unknown input format 'pulse'"** — Wrong FFmpeg: install Ubuntu ffmpeg and set `MANTRA_FFMPEG_PATH=/usr/bin/ffmpeg`.
+- **No mics in picker** — Enable WSLg and relaunch VS Code from the WSL shell (`code .`).
 
-### Addendum (verify quickly)
-1. Check WSLg: `wsl --version` → should show a **WSLg** line.  
-2. Probe mic in WSL:  
-   ```bash
-   ffmpeg -hide_banner -f pulse -i default -t 2 -f null -
-   ```
-   If it says **Connection refused**, run `wsl --update` then `wsl --shutdown`.  
-3. In VS Code, run **“Mantra: Select Microphone”** and pick a device (not just Default).
-
-### Quality of life
-Persist FFmpeg path for future shells:
+### Persist FFmpeg path
 ```bash
 echo 'export MANTRA_FFMPEG_PATH=/usr/bin/ffmpeg' >> ~/.bashrc
 ```
+
+---
+
+## Notes
+
+- FFmpeg is used automatically if available; there is nothing extra to install.
+- The extension loads after VS Code startup; listening begins only when you invoke **Mantra: Start Recording**.
+- All voice control executes standard VS Code commands or safe editor edits; you can always undo changes on your own or just say "undo".
