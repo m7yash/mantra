@@ -95,9 +95,14 @@ async function ensureClaudeTerminal(): Promise<vscode.Terminal | null> {
       _claudeTerminalReady = false;
       console.log(`[Mantra] Claude terminal created: "${newTerminal.name}"`);
 
-      // Give Claude CLI time to initialize before we send anything
-      await sleep(3000);
+      // Give Claude CLI time to fully initialize (welcome screen, load config).
+      // claude-vscode.terminal.open creates a shell then runs `claude` in it —
+      // sending text too early goes to the shell, not Claude.
+      console.log('[Mantra] Waiting for Claude CLI to initialize...');
+      vscode.window.setStatusBarMessage('Starting Claude...', 8000);
+      await sleep(7000);
       _claudeTerminalReady = true;
+      console.log('[Mantra] Claude terminal ready');
       return _claudeTerminal;
     }
   }

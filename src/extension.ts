@@ -5,8 +5,7 @@ import { canonicalCommandPhrases, tryExecuteMappedCommand } from './commands';
 import { handleCommand as handleTextCommand } from './textOps';
 import { typeInTerminal, executeInTerminal, executeLastTyped } from './terminal';
 import {
-  sendToClaudePanel, sendDirectToClaude, respondToClaude,
-  confirmClaude, claudeArrowUp, claudeArrowDown,
+  sendToClaudePanel, confirmClaude,
   focusClaudePanel, acceptClaudeChanges, rejectClaudeChanges,
   isClaudeMode, setClaudeMode, isClaudeTerminalActive,
   claudeResume, claudeNewConversation, claudeSetModel,
@@ -820,56 +819,26 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
             }
           }
 
-          // --- Claude permission prompts & menu navigation ---
-          // Claude CLI uses interactive selection UI: arrow keys to navigate, Enter to confirm.
-          if (isClaudeMode()) {
-            // Enter / confirm (most common — just press Enter on highlighted option)
-            if (/^(yes|yeah|yep|yup|sure|allow|confirm|approve|go ahead|do it|proceed|ok|okay|enter|select|accept this|that's fine|sounds good)$/i.test(t)) {
+          // --- Claude mode: "enter" to confirm permission prompts ---
+          // No auto-send passthrough. The LLM handles routing to Claude.
+          // "enter" / "yes" / "ok" just presses Enter on Claude's interactive UI.
+          if (isClaudeMode() || isClaudeTerminalActive()) {
+            if (/^(yes|yeah|yep|sure|allow|confirm|go ahead|do it|proceed|ok|okay|enter|select|sounds good)$/i.test(t)) {
               confirmClaude();
-              return;
-            }
-            // Navigate up/down in selection menus
-            if (/^(up|go up|move up|previous|previous option|option above|arrow up)$/i.test(t)) {
-              claudeArrowUp();
-              return;
-            }
-            if (/^(down|go down|move down|next|next option|option below|arrow down)$/i.test(t)) {
-              claudeArrowDown();
-              return;
-            }
-            // Allow for all / session-wide
-            if (/^(yes for session|allow for session|always allow|allow all|yes always|trust)$/i.test(t)) {
-              // Navigate to "allow for session" option (usually second), then confirm
-              claudeArrowDown();
-              await new Promise(r => setTimeout(r, 100));
-              confirmClaude();
-              return;
-            }
-            // Deny
-            if (/^(no|nope|deny|decline|reject this|don'?t allow|skip|pass)$/i.test(t)) {
-              respondToClaude('n');
               return;
             }
           }
 
-          // --- exit Claude mode ---
-          if (isClaudeMode() && /^(focus editor|go to editor|go to code|switch to editor|focus terminal|go to terminal|switch to terminal|focus sidebar|go to sidebar|exit claude|leave claude|stop claude mode)$/i.test(t)) {
+          // --- exit Claude mode / focus management ---
+          if ((isClaudeMode() || isClaudeTerminalActive()) && /^(focus editor|go to editor|go to code|switch to editor|back to editor|back to code|exit claude|leave claude|stop claude mode)$/i.test(t)) {
             setClaudeMode(false);
-            // Execute the focus command directly instead of relying on fall-through
-            if (/editor|code/i.test(t)) {
-              await vscode.commands.executeCommand('workbench.action.focusActiveEditorGroup');
-            } else if (/terminal/i.test(t)) {
-              await vscode.commands.executeCommand('workbench.action.terminal.focus');
-            } else if (/sidebar/i.test(t)) {
-              await vscode.commands.executeCommand('workbench.action.focusSideBar');
-            }
+            await vscode.commands.executeCommand('workbench.action.focusActiveEditorGroup');
+            vscode.window.setStatusBarMessage('Focused editor', 1500);
             return;
           }
-
-          // --- Claude passthrough mode ---
-          // When Claude mode is active, send all voice directly to Claude terminal.
-          if (isClaudeMode() && !/^(focus |go to |switch to |exit |leave |stop )/.test(t)) {
-            await sendDirectToClaude(transcript);
+          if ((isClaudeMode() || isClaudeTerminalActive()) && /^(focus terminal|go to terminal|switch to terminal|back to terminal)$/i.test(t)) {
+            setClaudeMode(false);
+            await vscode.commands.executeCommand('workbench.action.terminal.focus');
             return;
           }
 
