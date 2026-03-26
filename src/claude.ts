@@ -181,10 +181,10 @@ export async function sendToClaudePanel(prompt: string): Promise<void> {
     _claudeTerminalReady = true;
   }
 
-  terminal.sendText(prompt, true);
+  terminal.sendText(prompt, false); // type without pressing Enter
   setClaudeMode(true);
-  vscode.window.setStatusBarMessage('Sent to Claude', 2000);
-  console.log(`[Mantra] Sent to Claude: ${prompt.slice(0, 80)}...`);
+  vscode.window.setStatusBarMessage('Typed in Claude (press Enter to send)', 3000);
+  console.log(`[Mantra] Typed in Claude: ${prompt.slice(0, 80)}...`);
 }
 
 /**

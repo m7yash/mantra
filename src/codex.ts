@@ -247,15 +247,11 @@ export async function sendToCodexPanel(prompt: string): Promise<void> {
     _codexTerminalReady = true;
   }
 
-  // Send the prompt text, then press Enter separately.
-  // Codex's TUI doesn't always process sendText(text, true) as a single
-  // atomic type-then-enter; splitting them ensures the Enter key registers.
+  // Type the prompt without pressing Enter — user must confirm manually.
   terminal.sendText(prompt, false);
-  await sleep(150);
-  terminal.sendText('', true);
   setCodexMode(true);
-  vscode.window.setStatusBarMessage('Sent to Codex', 2000);
-  console.log(`[Mantra] Sent to Codex: ${prompt.slice(0, 80)}...`);
+  vscode.window.setStatusBarMessage('Typed in Codex (press Enter to send)', 3000);
+  console.log(`[Mantra] Typed in Codex: ${prompt.slice(0, 80)}...`);
 }
 
 /**

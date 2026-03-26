@@ -544,9 +544,11 @@ export class MantraSidebarProvider implements vscode.WebviewViewProvider {
   <div style="padding:2px 0;">
     <div style="font-size:11px;color:var(--vscode-descriptionForeground);padding:2px 0;">Agent</div>
     <select id="agentSelect" class="dropdown">
+      <option value="none">None</option>
       <option value="claude">Claude Code</option>
       <option value="codex">Codex CLI</option>
     </select>
+    <div id="agentHint" class="agent-hint" style="font-size:10px;color:var(--vscode-descriptionForeground);padding:2px 0;display:none;">Non-edit/command speech → Quick Question</div>
     <div id="installWrap" class="install-wrap" style="display:none;">
       <div class="install-msg" id="installMsg">Agent CLI is not installed.</div>
       <button class="install-btn" id="installBtn">Install via npm</button>
@@ -772,12 +774,19 @@ export class MantraSidebarProvider implements vscode.WebviewViewProvider {
 
       if (msg.agentBackend !== undefined) {
         agentSelect.value = msg.agentBackend;
-        const label = msg.agentBackend === 'codex' ? 'Codex' : 'Claude';
-        focusAgentLabel.textContent = label;
+        const agentHint = document.getElementById('agentHint');
+        if (msg.agentBackend === 'none') {
+          focusAgentLabel.textContent = 'Agent';
+          if (agentHint) agentHint.style.display = '';
+        } else {
+          const label = msg.agentBackend === 'codex' ? 'Codex' : 'Claude';
+          focusAgentLabel.textContent = label;
+          if (agentHint) agentHint.style.display = 'none';
+        }
       }
 
       if (msg.agentInstalled !== undefined) {
-        if (msg.agentInstalled) {
+        if (msg.agentInstalled || agentSelect.value === 'none') {
           installWrap.style.display = 'none';
         } else {
           const name = agentSelect.value === 'codex' ? 'Codex CLI' : 'Claude Code CLI';

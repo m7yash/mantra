@@ -123,9 +123,9 @@
       "properties": {
         "mantra.agentBackend": {
           "type": "string",
-          "enum": ["claude", "codex"],
-          "default": "claude",
-          "description": "Which AI agent to use for voice-directed prompts (Claude Code or Codex CLI). Only one agent can be active at a time."
+          "enum": ["claude", "codex", "none"],
+          "default": "none",
+          "description": "Which AI agent to use for voice-directed prompts. 'none' means unclassified speech goes to Quick Question mode instead of an agent."
         },
         "mantra.prompt": {
           "type": "string",

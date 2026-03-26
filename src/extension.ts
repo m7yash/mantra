@@ -62,13 +62,14 @@ function pushLog(kind: LogEntry['kind'], text: string, diff?: string, diffId?: n
 }
 
 /** Get the currently selected agent backend from settings. */
-function getSelectedAgent(): 'claude' | 'codex' {
-  return vscode.workspace.getConfiguration('mantra').get<string>('agentBackend', 'claude') as 'claude' | 'codex';
+function getSelectedAgent(): 'claude' | 'codex' | 'none' {
+  return vscode.workspace.getConfiguration('mantra').get<string>('agentBackend', 'none') as 'claude' | 'codex' | 'none';
 }
 
 /** Check if the selected agent's mode or terminal is active (voice should go to agent). */
 function isAgentModeActive(): boolean {
   const agent = getSelectedAgent();
+  if (agent === 'none') return false;
   if (agent === 'claude') return isClaudeMode() || isClaudeTerminalActive();
   return isCodexMode() || isCodexTerminalActive();
 }
@@ -1200,7 +1201,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
           }
           if (/^(stop|cancel|interrupt|stop claude|cancel claude|stop codex|cancel codex|stop agent|cancel agent|nevermind|never mind)$/i.test(t) && isAgentModeActive()) {
             interruptSelectedAgent();
-            pushLog(getSelectedAgent(), `Interrupted ${getSelectedAgent()}`);
+            pushLog(getSelectedAgent() as LogEntry['kind'], `Interrupted ${getSelectedAgent()}`);
             return;
           }
           // "set model to X" / "use sonnet" / "switch to opus" etc.
@@ -1324,12 +1325,16 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
               const prompt = agentAskMatch[1].replace(/^(uh|um|like|so|to|,)+\s*/i, '').trim();
               if (prompt) {
                 const agent = getSelectedAgent();
-                if (isAgentModeActive()) {
+                if (agent === 'none') {
+                  vscode.window.showWarningMessage('No agent selected — select Claude Code or Codex in the sidebar to use agent mode.');
+                  pushLog('error', 'No agent selected');
+                } else if (isAgentModeActive()) {
                   typeInSelectedAgent(prompt);
+                  pushLog(agent, prompt);
                 } else {
                   await sendToSelectedAgent(buildClaudePrompt(prompt));
+                  pushLog(agent, prompt);
                 }
-                pushLog(agent, prompt);
                 return;
               }
             }
@@ -1337,8 +1342,13 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 
           // --- enter agent mode explicitly (all names route to selected agent) ---
           if (/^(focus claude|switch to claude|go to claude|open claude|claude mode|talk to claude|focus codex|switch to codex|go to codex|open codex|codex mode|talk to codex|focus agent|switch to agent|go to agent|open agent|agent mode|talk to agent|focus llm|open llm|talk to llm)$/i.test(t)) {
-            await focusSelectedAgent();
-            pushLog('command', `Focus ${getSelectedAgent()}`);
+            if (getSelectedAgent() === 'none') {
+              vscode.window.showWarningMessage('No agent selected — select Claude Code or Codex in the sidebar.');
+              pushLog('error', 'No agent selected');
+            } else {
+              await focusSelectedAgent();
+              pushLog('command', `Focus ${getSelectedAgent()}`);
+            }
             return;
           }
 
@@ -1462,12 +1472,16 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
             const prompt = (result.payload || '').trim();
             if (prompt) {
               const agent = getSelectedAgent();
-              if (isAgentModeActive()) {
+              if (agent === 'none') {
+                vscode.window.showWarningMessage('No agent selected — select Claude Code or Codex in the sidebar to use agent mode.');
+                pushLog('error', 'No agent selected');
+              } else if (isAgentModeActive()) {
                 typeInSelectedAgent(prompt);
+                pushLog(agent, prompt);
               } else {
                 await sendToSelectedAgent(buildClaudePrompt(prompt));
+                pushLog(agent, prompt);
               }
-              pushLog(agent, prompt);
             }
           } else if (result.type === 'command') {
             const phrase = (result.payload || '').toString().trim();
@@ -1515,12 +1529,21 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
               pushLog('modification', `Modified ${filename}`, diff || undefined, diffId);
             }
           } else {
-            // "question" type — if agent is active, type into it;
-            // otherwise show answer in the output panel.
-            if (isAgentModeActive()) {
-              typeInSelectedAgent(transcript);
-              pushLog(getSelectedAgent(), transcript);
+            // "question" type — route to Quick Question panel or to agent.
+            // Quick Question if: user said "quick question", OR no agent selected.
+            // Otherwise: forward to the selected agent.
+            const isQuickQuestion = /\bquick\s+question\b/i.test(transcript);
+            const agent = getSelectedAgent();
+            if (!isQuickQuestion && agent !== 'none') {
+              // Route to the selected agent
+              if (isAgentModeActive()) {
+                typeInSelectedAgent(transcript);
+              } else {
+                await sendToSelectedAgent(buildClaudePrompt(transcript));
+              }
+              pushLog(agent as LogEntry['kind'], transcript);
             } else {
+              // Quick Question mode — show answer in the output panel
               const answer = result.payload;
               if ((answer || '').toLowerCase().replace(/[^\w\s]/g, '').trim() === 'thank you') return;
               if (outputChannel && answer) {
@@ -1700,16 +1723,21 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     cfg.update('agentBackend', agent, vscode.ConfigurationTarget.Global);
     console.log(`[Mantra] Agent backend changed to: ${agent}`);
 
-    // Close the other agent's terminal to enforce mutual exclusivity
-    if (agent === 'claude') {
-      closeCodexTerminal();
+    if (agent === 'none') {
+      // No agent — don't close anything, just update state
+      sidebar?.postState({ agentBackend: agent, agentInstalled: true });
     } else {
-      closeClaudeTerminal();
-    }
+      // Close the other agent's terminal to enforce mutual exclusivity
+      if (agent === 'claude') {
+        closeCodexTerminal();
+      } else {
+        closeClaudeTerminal();
+      }
 
-    // Check if the new agent is installed and push status to sidebar
-    const installed = agent === 'claude' ? true : checkCliInstalled('codex');
-    sidebar?.postState({ agentBackend: agent, agentInstalled: installed });
+      // Check if the new agent is installed and push status to sidebar
+      const installed = agent === 'claude' ? true : checkCliInstalled('codex');
+      sidebar?.postState({ agentBackend: agent, agentInstalled: installed });
+    }
   });
 
   // LLM provider change from sidebar
