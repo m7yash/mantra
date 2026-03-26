@@ -6,6 +6,7 @@ import { handleCommand as handleTextCommand } from './textOps';
 import { typeInTerminal, executeInTerminal, executeLastTyped } from './terminal';
 import {
   sendToClaudePanel, sendDirectToClaude, respondToClaude,
+  confirmClaude, claudeArrowUp, claudeArrowDown,
   focusClaudePanel, acceptClaudeChanges, rejectClaudeChanges,
   isClaudeMode, setClaudeMode, isClaudeTerminalActive,
   claudeResume, claudeNewConversation, claudeSetModel,
@@ -756,9 +757,13 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
             // already running; fall through
           }
 
-          // --- terminal execute shortcut (pre-LLM) ---
-          if (/^(execute|execute that|run that|hit enter|press enter|submit)$/i.test(t)) {
-            executeLastTyped();
+          // --- terminal execute / enter shortcut (pre-LLM) ---
+          if (/^(execute|execute that|run that|hit enter|press enter|submit|enter)$/i.test(t)) {
+            if (isClaudeMode() || isClaudeTerminalActive()) {
+              confirmClaude();
+            } else {
+              executeLastTyped();
+            }
             return;
           }
 
@@ -815,20 +820,50 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
             }
           }
 
-          // --- Claude permission prompts (yes/no/allow/deny) ---
+          // --- Claude permission prompts & menu navigation ---
+          // Claude CLI uses interactive selection UI: arrow keys to navigate, Enter to confirm.
           if (isClaudeMode()) {
-            const yesMatch = /^(yes|yeah|yep|yup|sure|allow|confirm|approve|go ahead|do it|proceed)$/i.test(t);
-            const yesSessionMatch = /^(yes for session|allow for session|always allow|allow all|yes always|trust)$/i.test(t);
-            const noMatch = /^(no|nope|deny|decline|reject this|don'?t allow|skip|pass)$/i.test(t);
-            if (yesMatch) { respondToClaude('y'); return; }
-            if (yesSessionMatch) { respondToClaude('Y'); return; }
-            if (noMatch) { respondToClaude('n'); return; }
+            // Enter / confirm (most common — just press Enter on highlighted option)
+            if (/^(yes|yeah|yep|yup|sure|allow|confirm|approve|go ahead|do it|proceed|ok|okay|enter|select|accept this|that's fine|sounds good)$/i.test(t)) {
+              confirmClaude();
+              return;
+            }
+            // Navigate up/down in selection menus
+            if (/^(up|go up|move up|previous|previous option|option above|arrow up)$/i.test(t)) {
+              claudeArrowUp();
+              return;
+            }
+            if (/^(down|go down|move down|next|next option|option below|arrow down)$/i.test(t)) {
+              claudeArrowDown();
+              return;
+            }
+            // Allow for all / session-wide
+            if (/^(yes for session|allow for session|always allow|allow all|yes always|trust)$/i.test(t)) {
+              // Navigate to "allow for session" option (usually second), then confirm
+              claudeArrowDown();
+              await new Promise(r => setTimeout(r, 100));
+              confirmClaude();
+              return;
+            }
+            // Deny
+            if (/^(no|nope|deny|decline|reject this|don'?t allow|skip|pass)$/i.test(t)) {
+              respondToClaude('n');
+              return;
+            }
           }
 
           // --- exit Claude mode ---
           if (isClaudeMode() && /^(focus editor|go to editor|go to code|switch to editor|focus terminal|go to terminal|switch to terminal|focus sidebar|go to sidebar|exit claude|leave claude|stop claude mode)$/i.test(t)) {
             setClaudeMode(false);
-            // Fall through to normal command routing
+            // Execute the focus command directly instead of relying on fall-through
+            if (/editor|code/i.test(t)) {
+              await vscode.commands.executeCommand('workbench.action.focusActiveEditorGroup');
+            } else if (/terminal/i.test(t)) {
+              await vscode.commands.executeCommand('workbench.action.terminal.focus');
+            } else if (/sidebar/i.test(t)) {
+              await vscode.commands.executeCommand('workbench.action.focusSideBar');
+            }
+            return;
           }
 
           // --- Claude passthrough mode ---

@@ -172,8 +172,10 @@ export async function sendDirectToClaude(text: string): Promise<void> {
 }
 
 /**
- * Respond to a Claude CLI prompt (yes/no/allow/deny).
- * Sends the appropriate text to the Claude terminal.
+ * Respond to a Claude CLI prompt.
+ * Claude CLI uses an interactive selection UI — responses are typically
+ * just pressing Enter (to confirm the highlighted option) or arrow keys
+ * to navigate. For y/n prompts, sends the character.
  */
 export function respondToClaude(response: string): void {
   if (!_claudeTerminal) {
@@ -182,6 +184,37 @@ export function respondToClaude(response: string): void {
   }
   _claudeTerminal.sendText(response, true);
   vscode.window.setStatusBarMessage(`Claude ← ${response}`, 1500);
+}
+
+/**
+ * Send Enter key to the Claude terminal (confirm current selection).
+ * This is the primary way to interact with Claude CLI permission prompts,
+ * which use an arrow-key selection UI where Enter confirms.
+ */
+export function confirmClaude(): void {
+  if (!_claudeTerminal) {
+    vscode.window.showWarningMessage('No active Claude terminal.');
+    return;
+  }
+  // Send empty string with addNewLine=true → just presses Enter
+  _claudeTerminal.sendText('', true);
+  vscode.window.setStatusBarMessage('Claude ← Enter', 1500);
+}
+
+/**
+ * Send arrow key escape sequences to the Claude terminal.
+ * Used to navigate Claude CLI selection menus.
+ */
+export function claudeArrowUp(): void {
+  if (!_claudeTerminal) return;
+  // ANSI escape for up arrow
+  _claudeTerminal.sendText('\x1b[A', false);
+}
+
+export function claudeArrowDown(): void {
+  if (!_claudeTerminal) return;
+  // ANSI escape for down arrow
+  _claudeTerminal.sendText('\x1b[B', false);
 }
 
 // ──────────────────────────────────────────────
