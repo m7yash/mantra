@@ -41,7 +41,7 @@ You'll be prompted the first time. Keys are stored in VS Code Secret Storage.
 
 ### 3) Start!
 
-Run **"Mantra: Start Recording"** from the Command Palette or press `Ctrl+Shift+1`.
+Run **"Mantra: Start Recording"** from the Command Palette, press `Ctrl+Shift+1`, or click **Start Listening** in the Mantra sidebar panel (activity bar icon).
 
 ---
 
@@ -86,7 +86,7 @@ Any modifier+key combo spoken naturally is executed via the system:
 - "enter" → presses Enter in whatever is focused
 
 ### Pause / Resume
-Say "pause" or "stop listening" to pause. Say "resume" or use `Ctrl+Shift+3` to resume.
+Say "pause" or "stop listening" to pause. Say "resume" or use `Ctrl+Shift+1` to start again.
 
 ---
 
@@ -121,9 +121,26 @@ While the Claude terminal is active:
 
 ---
 
+## Sidebar Panel
+
+Mantra adds a panel to the VS Code activity bar. From the sidebar you can:
+
+- **Start / Pause listening** with a single toggle button
+- **Test Microphone** — verify your mic is working with a live volume meter (no STT needed)
+- **Focus** — quick buttons to switch between Editor, Terminal, Claude, Explorer, Search, and Source Control
+- **Settings** — microphone picker, commands-only toggle, all settings, keyboard shortcuts
+- **API Keys** — configure Deepgram, Groq, and Cerebras keys
+- **Session Memory** — view and edit the running session context that the LLM uses. Edits take effect immediately.
+- **Router Prompt** — view and edit the main LLM system prompt directly in the sidebar
+- **Memory Manager Prompt** — view and edit the prompt that controls how session memory is summarized
+
+---
+
 ## Conversation Memory
 
 Mantra maintains a running memory of your session. After each interaction, the LLM updates a summary that includes what you asked, what actions were taken, file context, and terminal output. This means later instructions can reference earlier ones naturally — "do the same thing for the other file", "ask Claude how to fix that error from before", etc.
+
+The session memory and both LLM prompts (router and memory manager) are visible and editable in the sidebar panel.
 
 ---
 
@@ -140,9 +157,12 @@ Mantra automatically captures terminal commands and their output via VS Code she
 
 - **Start Recording** — `Ctrl+Shift+1`
 - **Pause Listening** — `Ctrl+Shift+2`
-- **Resume Listening** — `Ctrl+Shift+3`
-- **Open Settings** — `Ctrl+Shift+4`
-- **Select Microphone** — `Ctrl+Shift+5`
+- **Open Settings** — `Ctrl+Shift+3`
+- **Select Microphone** — `Ctrl+Shift+4`
+- **Test Microphone** — available from sidebar or Command Palette
+- **Focus Claude Code Panel** — available from sidebar or Command Palette
+
+All shortcuts can be customized in **File > Preferences > Keyboard Shortcuts** (search "mantra"), or via the Keyboard Shortcuts button in the sidebar.
 
 ---
 
@@ -153,7 +173,8 @@ Open **Settings > Extensions > Mantra** to adjust:
 - **LLM Provider** — Choose between **Groq** (default) or **Cerebras**.
 - **Groq Model** — `openai/gpt-oss-20b` (faster, default) or `openai/gpt-oss-120b` (more capable).
 - **Reasoning Effort** — Low (default), medium, or high.
-- **Prompt** — Customize the LLM system prompt.
+- **Prompt** — Customize the LLM system prompt (also editable in the sidebar).
+- **Memory Manager Prompt** — Customize the prompt that summarizes session context (also editable in the sidebar).
 - **Commands Only** — Bypass the LLM entirely. Only pre-mapped commands work (you must say the exact command phrase).
 - **Microphone Input** — Set via Command Palette > "Mantra: Select Microphone". Advanced users can paste raw FFmpeg input args.
 

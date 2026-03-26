@@ -1,5 +1,5 @@
 import * as vscode from 'vscode';
-import { startMicStream, pauseRecording, recorderActive } from './recorder';
+import { startMicStream, pauseRecording, recorderActive, onVolume, offVolume, getMicName, testMic, stopMicTest, isMicTesting } from './recorder';
 import { Model } from './model';
 import { canonicalCommandPhrases, tryExecuteMappedCommand } from './commands';
 import { handleCommand as handleTextCommand } from './textOps';
@@ -12,6 +12,7 @@ import {
   claudeResume, claudeNewConversation, claudeSetModel,
   claudeHelp, claudeStatus, claudeCompact, claudeUndo, claudeInterrupt,
 } from './claude';
+import { MantraSidebarProvider } from './sidebarProvider';
 import { exec } from 'child_process';
 import { initTerminalHistory, getLastTerminalOutput, getFullTerminalHistory, formatTerminalContext } from './terminalHistory';
 import ffmpegStatic from 'ffmpeg-static';
@@ -22,6 +23,7 @@ let cerebrasApiKey: string = '';
 let groqApiKey: string = '';
 let deepgramApiKey: string = '';
 let outputChannel: vscode.OutputChannel | null = null;
+let sidebar: MantraSidebarProvider | null = null;
 
 // Track explicit pause state separate from recorder process state
 let __mantraPaused = false;
@@ -695,6 +697,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     }
     __mantraPaused = false;
     __mantraSessionActive = true;
+    stopMicTest(); // stop test if running
     if (!(await ensureApiKeys(context))) return;
 
     console.log('[Mantra] STT model: Flux');
@@ -719,10 +722,25 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 
     reportProgress?.('Listening...');
 
+    // Push listening state + provider info to sidebar
+    {
+      const cfg = vscode.workspace.getConfiguration('mantra');
+      const prov = cfg.get<string>('llmProvider') || 'groq';
+      const gm = cfg.get<string>('groqModel') || 'openai/gpt-oss-20b';
+      const provLabel = prov === 'groq' ? `Groq / ${gm.replace('openai/', '')}` : 'Cerebras';
+      sidebar?.postState({ listening: true, provider: provLabel });
+    }
+
+    // Volume metering → sidebar
+    onVolume((level) => sidebar?.postState({ volume: level }));
+
     // Loop: mic → Deepgram stream → final transcript → route → repeat
     while (!__mantraPaused) {
       try {
         await startMicStream(context, async (pcm) => {
+          // Push mic name to sidebar (resolved inside startMicStream before this callback)
+          sidebar?.postState({ mic: getMicName() });
+
           // Send PCM to Deepgram; show live transcription in the notification
           const transcript = await model!.transcribeStream(pcm, (partial) => {
             if (partial) reportProgress?.(partial);
@@ -745,6 +763,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
           }
 
           console.log('[Mantra] Transcript: ', transcript);
+          sidebar?.postState({ lastTranscript: transcript });
 
           // --- PAUSE/RESUME interception (pre-LLM) ---
           const t = transcript.trim().toLowerCase();
@@ -1031,7 +1050,9 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 
           // Update conversation memory in the background (non-blocking)
           if (model && result) {
-            model.updateMemory(transcript, result, termHistory || undefined).catch(() => {});
+            model.updateMemory(transcript, result, termHistory || undefined)
+              .then(() => sidebar?.postState({ memory: model!.getMemory() }))
+              .catch(() => {});
           }
         });
       } catch (err: any) {
@@ -1055,6 +1076,8 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     }
 
     // Close the progress notification when loop exits
+    offVolume();
+    sidebar?.postState({ listening: false, volume: 0 });
     if (endProgress) endProgress();
     await progressPromise;
     __mantraSessionActive = false;
@@ -1063,15 +1086,11 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   const pauseDisposable = vscode.commands.registerCommand('mantra.pause', () => {
     __mantraPaused = true;
     __mantraSessionActive = false;
+    offVolume();
     pauseRecording();
+    sidebar?.postState({ listening: false, volume: 0 });
     vscode.window.showInformationMessage('Mantra paused');
     console.log('Paused');
-  });
-
-  const resumeDisposable = vscode.commands.registerCommand('mantra.resume', () => {
-    __mantraPaused = false;
-    console.log('Resume requested');
-    return vscode.commands.executeCommand('mantra.start');
   });
 
   const configurePromptDisposable = vscode.commands.registerCommand('mantra.configurePrompt', async () => {
@@ -1250,6 +1269,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 
     await cfg.update('microphoneInput', pick.args, vscode.ConfigurationTarget.Global);
     vscode.window.setStatusBarMessage(`Mantra mic set: ${pick.label}`, 3000);
+    sidebar?.postState({ mic: pick.label });
   });
 
   const openSettingsCmd = vscode.commands.registerCommand(
@@ -1282,11 +1302,55 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     focusClaudePanel();
   });
 
+  // Sidebar panel
+  sidebar = new MantraSidebarProvider(context.extensionUri);
+  context.subscriptions.push(
+    vscode.window.registerWebviewViewProvider(MantraSidebarProvider.viewType, sidebar)
+  );
+
+  // Memory editing from sidebar
+  sidebar.onMemoryEdit((text) => {
+    if (model) {
+      model.setMemory(text);
+      console.log(`[Mantra] Memory edited by user (${text.length} chars)`);
+    }
+  });
+
+  // Prompt editing from sidebar
+  sidebar.onPromptEdit((key, text) => {
+    const cfg = vscode.workspace.getConfiguration('mantra');
+    cfg.update(key, text, vscode.ConfigurationTarget.Global);
+    console.log(`[Mantra] Prompt "${key}" updated from sidebar (${text.length} chars)`);
+  });
+
+  // Push initial prompt values to sidebar
+  {
+    const cfg = vscode.workspace.getConfiguration('mantra');
+    sidebar.postState({
+      routerPrompt: cfg.get<string>('prompt') || '',
+      memoryPrompt: cfg.get<string>('memoryPrompt') || '',
+    });
+  }
+
+  // Test microphone command (volume meter only, no STT)
+  const testMicCmd = vscode.commands.registerCommand('mantra.testMicrophone', () => {
+    if (isMicTesting()) {
+      stopMicTest();
+      sidebar?.postState({ testing: false, volume: 0 });
+      return;
+    }
+    sidebar?.postState({ testing: true });
+    testMic(context, (level, micName) => {
+      sidebar?.postState({ volume: level, mic: micName });
+    }).then(() => {
+      sidebar?.postState({ testing: false, volume: 0 });
+    });
+  });
+
   // Add to subscriptions:
   context.subscriptions.push(
     startDisposable,
     pauseDisposable,
-    resumeDisposable,
     configurePromptDisposable,
     toggleCommandsOnlyDisposable,
     selectMicDisposable,
@@ -1294,7 +1358,8 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     editCerebrasCmd,
     editGroqCmd,
     editDeepgramCmd,
-    focusClaudeDisposable
+    focusClaudeDisposable,
+    testMicCmd
   );
 }
 

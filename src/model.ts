@@ -808,26 +808,7 @@ export class Model {
         messages: [
           {
             role: 'system',
-            content: [
-              'You are a memory manager for a voice-controlled code editor session.',
-              'You maintain a thorough running summary of everything that has happened so far.',
-              'Given the current memory and the latest interaction, produce an UPDATED memory.',
-              '',
-              'Your memory should be written so that a future LLM reading it has full context to help the user. Include:',
-              '- What project/files the user is working on and their current goals',
-              '- Key decisions, code changes, and modifications made (with filenames and what changed)',
-              '- Terminal commands run and their outcomes (successes, errors, what was installed/configured)',
-              '- Questions the user asked and the answers they received — especially if the answer informs future work',
-              '- User preferences, corrections, or patterns (e.g. "user prefers python3", "user uses Claude for refactoring")',
-              '- Current state: what the user was last doing, any unresolved issues or next steps',
-              '',
-              'Rules:',
-              '- Be thorough but not verbose. Prioritize information that would be useful for the NEXT interaction.',
-              '- Merge new info into existing context rather than appending a changelog.',
-              '- Drop details that are fully superseded (e.g. old errors that were fixed).',
-              '- Max ~500 words.',
-              '- Output ONLY the updated memory text. No labels, no explanation.',
-            ].join('\n'),
+            content: (vscode.workspace.getConfiguration('mantra').get<string>('memoryPrompt') ?? '').trim(),
           },
           {
             role: 'user',
@@ -854,4 +835,7 @@ export class Model {
 
   /** Get the current conversation memory. */
   getMemory(): string { return this.memory; }
+
+  /** Set the conversation memory (e.g. user edited it). */
+  setMemory(text: string): void { this.memory = text; }
 }

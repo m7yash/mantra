@@ -7,6 +7,28 @@ import ffmpegStatic from 'ffmpeg-static';
 import { spawn, spawnSync, ChildProcess } from 'child_process';
 
 let currentRecProcess: ChildProcess | null = null;
+let currentMicName: string = '';
+
+export function getMicName(): string { return currentMicName; }
+
+// ---------- volume metering ----------
+let volumeCallback: ((level: number) => void) | null = null;
+let lastVolumeTime = 0;
+const VOLUME_THROTTLE_MS = 80; // ~12fps
+
+export function onVolume(cb: (level: number) => void): void { volumeCallback = cb; }
+export function offVolume(): void { volumeCallback = null; }
+
+function computeRms(buf: Buffer): number {
+  const samples = Math.floor(buf.length / 2);
+  if (samples === 0) return 0;
+  let sum = 0;
+  for (let i = 0; i < samples; i++) {
+    const s = buf.readInt16LE(i * 2);
+    sum += s * s;
+  }
+  return Math.sqrt(sum / samples) / 32768;
+}
 
 // ---------- logging ----------
 let recorderLog: vscode.OutputChannel | null = null;
@@ -35,6 +57,7 @@ export function pauseRecording(): void {
   if (!currentRecProcess) return;
   terminate(currentRecProcess);
   currentRecProcess = null;
+  if (volumeCallback) volumeCallback(0);
   status('⏸️ Recording stopped.');
   logInfo('Recording stopped.');
 }
@@ -383,6 +406,7 @@ export async function startMicStream(
     // Fallback
     return rawInput || chosenInput!.join(' ');
   })();
+  currentMicName = micName;
   logInfo(`Using microphone: ${micName} (raw: ${JSON.stringify(chosenInput)})`);
   console.log(`[Mantra] 🎙️ Microphone: ${micName}`);
   status(`🎙️ Mic: ${micName}`);
@@ -425,6 +449,17 @@ export async function startMicStream(
 
   try {
     if (!child.stdout) throw new Error('FFmpeg did not provide a stdout stream.');
+
+    // Volume metering: tap PCM data for RMS level (throttled)
+    if (volumeCallback) {
+      child.stdout.on('data', (chunk: Buffer) => {
+        const now = Date.now();
+        if (now - lastVolumeTime < VOLUME_THROTTLE_MS) return;
+        lastVolumeTime = now;
+        if (volumeCallback) volumeCallback(computeRms(chunk));
+      });
+    }
+
     logInfo('Microphone stream ready; handing off PCM to consumer.');
     await onStream(child.stdout);
   } catch (err) {
@@ -439,4 +474,77 @@ export async function startMicStream(
     }
     status('✅ Microphone session ended.', 3000);
   }
+}
+
+// ---------- mic test (volume meter only, no STT) ----------
+let testProcess: ChildProcess | null = null;
+
+export async function testMic(
+  context: vscode.ExtensionContext,
+  onLevel: (level: number, micName: string) => void
+): Promise<void> {
+  stopMicTest();
+
+  let ffmpegCmd: string;
+  try {
+    ffmpegCmd = await resolveFfmpegPath(context);
+  } catch (e) {
+    vscode.window.showErrorMessage(e instanceof Error ? e.message : String(e));
+    return;
+  }
+
+  const cfgRaw = (vscode.workspace.getConfiguration('mantra').get<string>('microphoneInput', '') || '').trim();
+  const envRaw = (process.env.MANTRA_AUDIO_INPUT || '').trim();
+  const override = cfgRaw || envRaw;
+
+  let chosenInput: string[] | null = null;
+  if (override) {
+    chosenInput = splitArgsRespectQuotes(override);
+  } else if (process.platform === 'win32') {
+    const candidates = buildWindowsCandidates(ffmpegCmd);
+    for (const c of candidates) {
+      if (probeInput(ffmpegCmd, c).ok) { chosenInput = c; break; }
+    }
+    if (!chosenInput) {
+      vscode.window.showErrorMessage('No audio input found. Use "Mantra: Select Microphone" first.');
+      return;
+    }
+  } else {
+    chosenInput = buildNonWindowsInputArgs();
+  }
+
+  // Resolve mic name (simplified)
+  const iIdx = chosenInput.indexOf('-i');
+  const rawInput = iIdx >= 0 && iIdx + 1 < chosenInput.length ? chosenInput[iIdx + 1] : '';
+  const name = rawInput.replace(/^audio=/, '').replace(/^:/, '') || 'default';
+
+  const ffArgs = [...chosenInput, '-vn', '-ac', '1', '-ar', '16000', '-f', 's16le', '-hide_banner', '-loglevel', 'warning', 'pipe:1'];
+  const child = spawn(ffmpegCmd, ffArgs, { stdio: ['ignore', 'pipe', 'pipe'] });
+  testProcess = child;
+
+  child.stderr?.on('data', () => {}); // drain
+
+  let lastT = 0;
+  child.stdout?.on('data', (chunk: Buffer) => {
+    const now = Date.now();
+    if (now - lastT < VOLUME_THROTTLE_MS) return;
+    lastT = now;
+    onLevel(computeRms(chunk), name);
+  });
+
+  // Keep the promise alive until the process exits
+  return new Promise<void>((resolve) => {
+    child.on('error', () => { testProcess = null; resolve(); });
+    child.on('close', () => { if (testProcess === child) testProcess = null; resolve(); });
+  });
+}
+
+export function stopMicTest(): void {
+  if (!testProcess) return;
+  terminate(testProcess);
+  testProcess = null;
+}
+
+export function isMicTesting(): boolean {
+  return !!testProcess && !testProcess.killed;
 }
