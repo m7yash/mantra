@@ -23,6 +23,22 @@ function toIntMaybe(raw: string): number | null {
   const s = norm(raw);
   if (/^\d+$/.test(digitsOnly(s))) return parseInt(digitsOnly(s), 10);
 
+  // STT often splits numbers with spaces: "1 51" → 151, "15 1" → 151
+  const joined = s.replace(/\s+/g, '');
+  if (/^\d+$/.test(joined)) return parseInt(joined, 10);
+
+  const SINGLE_DIGITS: Record<string, string> = {
+    'zero': '0', 'oh': '0', 'one': '1', 'two': '2', 'three': '3', 'four': '4',
+    'five': '5', 'six': '6', 'seven': '7', 'eight': '8', 'nine': '9',
+  };
+
+  // STT digit-by-digit: "one five one" → "151"
+  const tokens = s.split(/[\s-]+/).filter(Boolean);
+  if (tokens.length > 1) {
+    const digitChars = tokens.map(t => /^\d$/.test(t) ? t : (SINGLE_DIGITS[t] ?? null));
+    if (digitChars.every(d => d !== null)) return parseInt(digitChars.join(''), 10);
+  }
+
   const UNITS: Record<string, number> = {
     'zero': 0, 'oh': 0, 'one': 1, 'two': 2, 'three': 3, 'four': 4, 'five': 5,
     'six': 6, 'seven': 7, 'eight': 8, 'nine': 9, 'ten': 10,
@@ -38,9 +54,14 @@ function toIntMaybe(raw: string): number | null {
   };
 
   let total = 0, current = 0;
-  for (const tok of s.split(/\s+/)) {
-    if (UNITS.hasOwnProperty(tok)) current += UNITS[tok];
-    else if (TENS.hasOwnProperty(tok)) current += TENS[tok];
+  for (const tok of s.split(/[\s-]+/)) {
+    if (/^\d+$/.test(tok)) current += parseInt(tok, 10);
+    else if (UNITS.hasOwnProperty(tok)) current += UNITS[tok];
+    else if (TENS.hasOwnProperty(tok)) {
+      // Implied "hundred": "two fifty one" → 251 (people drop "hundred" in speech)
+      if (current >= 1 && current <= 19) current *= 100;
+      current += TENS[tok];
+    }
     else if (SCALES.hasOwnProperty(tok)) { current *= SCALES[tok]; total += current; current = 0; }
     else if (tok === 'and') continue;
     else return null;
@@ -268,23 +289,32 @@ async function scrollViewport(
 function selectLines(ed: vscode.TextEditor, a: number, b: number): vscode.Range {
   const start = clamp(Math.min(a, b) - 1, 0, ed.document.lineCount - 1);
   const end = clamp(Math.max(a, b) - 1, 0, ed.document.lineCount - 1);
-  const range = new vscode.Range(
-    new vscode.Position(start, 0),
-    new vscode.Position(end, Number.MAX_SAFE_INTEGER)
-  );
+  let range: vscode.Range;
+  if (end < ed.document.lineCount - 1) {
+    // Include the trailing newline by extending to the start of the next line
+    range = new vscode.Range(
+      new vscode.Position(start, 0),
+      new vscode.Position(end + 1, 0)
+    );
+  } else {
+    // Last line in file — no trailing newline to include
+    range = new vscode.Range(
+      new vscode.Position(start, 0),
+      new vscode.Position(end, Number.MAX_SAFE_INTEGER)
+    );
+  }
   ed.selection = new vscode.Selection(range.start, range.end);
   return range;
 }
 
 async function cutRangeToClipboard(ed: vscode.TextEditor, range: vscode.Range) {
-  const text = ed.document.getText(range);
-  await vscode.env.clipboard.writeText(text);
-  await ed.edit(b => b.delete(range));
+  ed.selection = new vscode.Selection(range.start, range.end);
+  await vscode.commands.executeCommand('editor.action.clipboardCutAction');
 }
 
 async function copyRangeToClipboard(ed: vscode.TextEditor, range: vscode.Range) {
-  const text = ed.document.getText(range);
-  await vscode.env.clipboard.writeText(text);
+  ed.selection = new vscode.Selection(range.start, range.end);
+  await vscode.commands.executeCommand('editor.action.clipboardCopyAction');
 }
 
 async function indentSelection(ed: vscode.TextEditor, outdent = false) {
@@ -310,8 +340,8 @@ export async function handleCommand(utterance: string, _context?: vscode.Extensi
   const s = norm(utterance);
   const ed = activeEditor();
 
-  // paste (custom so we can round-trip our own clipboard)
-  if (ed && /^paste$/i.test(s)) { await pasteClipboard(ed); return true; }
+  // paste
+  if (ed && /^paste(\s+(it|that|here|clipboard))?$/i.test(s)) { await pasteClipboard(ed); return true; }
 
   // ---------- Highly-specific, parameterized ops first ----------
 

@@ -1,5 +1,12 @@
 import * as vscode from 'vscode';
 
+export interface LogEntry {
+  time: string;           // HH:MM:SS
+  kind: 'transcript' | 'command' | 'modification' | 'terminal' | 'question' | 'claude' | 'error' | 'info';
+  text: string;           // main text
+  diff?: string;          // unified diff for modifications
+}
+
 export interface SidebarState {
   volume?: number;        // 0-1 RMS level
   memory?: string;        // conversation memory text
@@ -16,6 +23,7 @@ export class MantraSidebarProvider implements vscode.WebviewViewProvider {
   public static readonly viewType = 'mantra.sidebar';
   private _view?: vscode.WebviewView;
   private _cachedState: SidebarState = {};
+  private _logs: LogEntry[] = [];
   private _onMemoryEdit?: (text: string) => void;
   private _onPromptEdit?: (key: string, text: string) => void;
 
@@ -35,6 +43,13 @@ export class MantraSidebarProvider implements vscode.WebviewViewProvider {
   public postState(state: SidebarState): void {
     Object.assign(this._cachedState, state);
     this._view?.webview.postMessage({ type: 'state', ...state });
+  }
+
+  /** Push a log entry to the activity log. */
+  public pushLog(entry: LogEntry): void {
+    this._logs.push(entry);
+    if (this._logs.length > 200) this._logs.splice(0, this._logs.length - 200);
+    this._view?.webview.postMessage({ type: 'log', entry });
   }
 
   public resolveWebviewView(
@@ -67,6 +82,10 @@ export class MantraSidebarProvider implements vscode.WebviewViewProvider {
         // Webview loaded — push cached state so it's populated immediately
         if (Object.keys(this._cachedState).length > 0) {
           this._view?.webview.postMessage({ type: 'state', ...this._cachedState });
+        }
+        // Replay cached logs
+        for (const entry of this._logs) {
+          this._view?.webview.postMessage({ type: 'log', entry });
         }
       }
     });
@@ -279,6 +298,77 @@ export class MantraSidebarProvider implements vscode.WebviewViewProvider {
     overflow: hidden;
     text-overflow: ellipsis;
   }
+
+  /* ── Activity Log ── */
+  .log-wrap {
+    padding: 4px 0 0;
+    max-height: 400px;
+    overflow-y: auto;
+  }
+  .log-entry {
+    padding: 4px 6px;
+    margin: 2px 0;
+    border-radius: 3px;
+    font-size: 11px;
+    line-height: 1.4;
+    border-left: 3px solid transparent;
+  }
+  .log-entry.transcript { border-left-color: var(--vscode-charts-blue, #3794ff); }
+  .log-entry.command { border-left-color: var(--vscode-charts-green, #89d185); }
+  .log-entry.modification { border-left-color: var(--vscode-charts-yellow, #cca700); }
+  .log-entry.terminal { border-left-color: var(--vscode-charts-purple, #b180d7); }
+  .log-entry.question { border-left-color: var(--vscode-charts-orange, #d18616); }
+  .log-entry.claude { border-left-color: var(--vscode-charts-red, #f14c4c); }
+  .log-entry.error { border-left-color: var(--vscode-errorForeground, #f44); }
+  .log-entry.info { border-left-color: var(--vscode-descriptionForeground); }
+  .log-time {
+    font-size: 10px;
+    color: var(--vscode-descriptionForeground);
+    margin-right: 6px;
+  }
+  .log-kind {
+    font-size: 10px;
+    font-weight: 600;
+    text-transform: uppercase;
+    opacity: 0.7;
+    margin-right: 4px;
+  }
+  .log-text {
+    color: var(--vscode-foreground);
+    word-break: break-word;
+  }
+  .log-diff-toggle {
+    font-size: 10px;
+    color: var(--vscode-textLink-foreground);
+    cursor: pointer;
+    margin-top: 2px;
+    display: inline-block;
+  }
+  .log-diff-toggle:hover { text-decoration: underline; }
+  .log-diff {
+    display: none;
+    margin-top: 4px;
+    padding: 4px 6px;
+    background: var(--vscode-editor-background);
+    border: 1px solid var(--vscode-widget-border, rgba(128,128,128,0.2));
+    border-radius: 3px;
+    font-family: var(--vscode-editor-font-family, monospace);
+    font-size: 11px;
+    line-height: 1.35;
+    white-space: pre-wrap;
+    word-break: break-all;
+    max-height: 300px;
+    overflow-y: auto;
+  }
+  .diff-add { color: var(--vscode-gitDecoration-addedResourceForeground, #89d185); }
+  .diff-del { color: var(--vscode-gitDecoration-deletedResourceForeground, #f44); }
+  .diff-hdr { color: var(--vscode-descriptionForeground); font-weight: 600; }
+  .log-empty {
+    font-size: 11px;
+    font-style: italic;
+    color: var(--vscode-disabledForeground);
+    padding: 4px 0;
+  }
 </style>
 </head>
 <body>
@@ -311,6 +401,12 @@ export class MantraSidebarProvider implements vscode.WebviewViewProvider {
   <div id="statusWrap" style="display:none;">
     <div class="status-row" id="providerRow"></div>
     <div class="transcript-text" id="transcriptRow"></div>
+  </div>
+
+  <!-- Activity Log -->
+  <div class="section-label">Activity Log</div>
+  <div class="log-wrap" id="logWrap">
+    <div class="log-empty" id="logEmpty">No activity yet. Start listening to see logs.</div>
   </div>
 
   <div class="divider"></div>
@@ -418,6 +514,8 @@ export class MantraSidebarProvider implements vscode.WebviewViewProvider {
     const memoryText = document.getElementById('memoryText');
     const routerPromptEl = document.getElementById('routerPrompt');
     const memoryPromptEl = document.getElementById('memoryPrompt');
+    const logWrap = document.getElementById('logWrap');
+    const logEmpty = document.getElementById('logEmpty');
 
     toggleBtn.addEventListener('click', () => {
       if (listening) {
@@ -441,8 +539,43 @@ export class MantraSidebarProvider implements vscode.WebviewViewProvider {
       vscode.postMessage({ type: 'openKeybindings' });
     });
 
+    function escHtml(s) { const d = document.createElement('div'); d.textContent = s; return d.innerHTML; }
+
+    function renderDiffHtml(diff) {
+      return diff.split('\\n').map(line => {
+        const esc = escHtml(line);
+        if (line.startsWith('@@')) return '<span class="diff-hdr">' + esc + '</span>';
+        if (line.startsWith('+'))  return '<span class="diff-add">' + esc + '</span>';
+        if (line.startsWith('-'))  return '<span class="diff-del">' + esc + '</span>';
+        return esc;
+      }).join('\\n');
+    }
+
+    let logCounter = 0;
+
+    function addLogEntry(entry) {
+      if (logEmpty) logEmpty.style.display = 'none';
+      const id = 'logdiff' + (logCounter++);
+      const el = document.createElement('div');
+      el.className = 'log-entry ' + (entry.kind || 'info');
+
+      let html = '<span class="log-time">' + escHtml(entry.time) + '</span>'
+        + '<span class="log-kind">' + escHtml(entry.kind) + '</span>'
+        + '<span class="log-text">' + escHtml(entry.text) + '</span>';
+
+      if (entry.diff) {
+        html += '<br><span class="log-diff-toggle" onclick="var d=document.getElementById(\\'' + id + '\\');d.style.display=d.style.display===\\'none\\'?\\'block\\':\\'none\\'">Show diff</span>';
+        html += '<div class="log-diff" id="' + id + '">' + renderDiffHtml(entry.diff) + '</div>';
+      }
+
+      el.innerHTML = html;
+      logWrap.appendChild(el);
+      logWrap.scrollTop = logWrap.scrollHeight;
+    }
+
     window.addEventListener('message', (event) => {
       const msg = event.data;
+      if (msg.type === 'log') { addLogEntry(msg.entry); return; }
       if (msg.type !== 'state') return;
 
       if (msg.volume !== undefined) {

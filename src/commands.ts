@@ -36,6 +36,7 @@ const SPECS: CommandSpec[] = [
   { id: 'redo', name: 'redo', category: 'edit' },
   { id: 'editor.action.clipboardCutAction', name: 'cut', aliases: ['cut selection'], category: 'edit' },
   { id: 'editor.action.clipboardCopyAction', name: 'copy', aliases: ['copy selection'], category: 'edit' },
+  { id: 'editor.action.clipboardPasteAction', name: 'paste', aliases: ['paste clipboard', 'paste it', 'paste that'], category: 'edit' },
 
   { id: 'editor.action.selectAll', name: 'select all', category: 'edit' },
   { id: 'editor.action.commentLine', name: 'toggle line comment', aliases: ['line comment', 'toggle comment'], category: 'edit' },

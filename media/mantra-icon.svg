@@ -1,16 +1,14 @@
 <svg width="28" height="28" viewBox="0 0 28 28" fill="none" xmlns="http://www.w3.org/2000/svg">
-  <!-- Top waveform: 7 bars, symmetric peak upward from center line -->
-  <rect x="5"    y="10"  width="1.8" height="4"   rx="0.9" fill="#C5C5C5"/>
-  <rect x="7.8"  y="8"   width="1.8" height="6"   rx="0.9" fill="#C5C5C5"/>
-  <rect x="10.6" y="5.5" width="1.8" height="8.5" rx="0.9" fill="#C5C5C5"/>
-  <rect x="13.1" y="3"   width="1.8" height="11"  rx="0.9" fill="#C5C5C5"/>
-  <rect x="15.6" y="5.5" width="1.8" height="8.5" rx="0.9" fill="#C5C5C5"/>
-  <rect x="18.4" y="8"   width="1.8" height="6"   rx="0.9" fill="#C5C5C5"/>
-  <rect x="21.2" y="10"  width="1.8" height="4"   rx="0.9" fill="#C5C5C5"/>
-  <!-- Bottom waveform: 5 bars, symmetric peak downward from center line -->
-  <rect x="7.8"  y="14"  width="1.8" height="6"   rx="0.9" fill="#C5C5C5"/>
-  <rect x="10.6" y="14"  width="1.8" height="8.5" rx="0.9" fill="#C5C5C5"/>
-  <rect x="13.1" y="14"  width="1.8" height="11"  rx="0.9" fill="#C5C5C5"/>
-  <rect x="15.6" y="14"  width="1.8" height="8.5" rx="0.9" fill="#C5C5C5"/>
-  <rect x="18.4" y="14"  width="1.8" height="6"   rx="0.9" fill="#C5C5C5"/>
+  <rect x="4" y="11" width="2" height="3" rx="1" fill="#C5C5C5"/>
+  <rect x="7" y="9" width="2" height="5" rx="1" fill="#C5C5C5"/>
+  <rect x="10" y="6" width="2" height="8" rx="1" fill="#C5C5C5"/>
+  <rect x="13" y="4" width="2" height="10" rx="1" fill="#C5C5C5"/>
+  <rect x="16" y="6" width="2" height="8" rx="1" fill="#C5C5C5"/>
+  <rect x="19" y="9" width="2" height="5" rx="1" fill="#C5C5C5"/>
+  <rect x="22" y="11" width="2" height="3" rx="1" fill="#C5C5C5"/>
+  <rect x="7" y="14" width="2" height="5" rx="1" fill="#C5C5C5"/>
+  <rect x="10" y="14" width="2" height="8" rx="1" fill="#C5C5C5"/>
+  <rect x="13" y="14" width="2" height="10" rx="1" fill="#C5C5C5"/>
+  <rect x="16" y="14" width="2" height="8" rx="1" fill="#C5C5C5"/>
+  <rect x="19" y="14" width="2" height="5" rx="1" fill="#C5C5C5"/>
 </svg>

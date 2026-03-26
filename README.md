@@ -127,6 +127,7 @@ Mantra adds a panel to the VS Code activity bar. From the sidebar you can:
 
 - **Start / Pause listening** with a single toggle button
 - **Test Microphone** — verify your mic is working with a live volume meter (no STT needed)
+- **Activity Log** — scrollable history of every transcript, command, code edit, terminal action, question, and Claude interaction. Code modifications include a "Show diff" toggle to view exactly what changed.
 - **Focus** — quick buttons to switch between Editor, Terminal, Claude, Explorer, Search, and Source Control
 - **Settings** — microphone picker, commands-only toggle, all settings, keyboard shortcuts
 - **API Keys** — configure Deepgram, Groq, and Cerebras keys
@@ -196,7 +197,7 @@ Open **Settings > Extensions > Mantra** to adjust:
 - **"Command not found: claude"** — Add the CLI to your PATH: `echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.zshrc && source ~/.zshrc`
 - **Ghost transcriptions ("two", "four")** — These are filtered automatically. If ambient noise is high, consider adjusting your microphone position.
 - **File not found** — Include punctuation words when speaking filenames: "open auth dot controller dot ts".
-- **Logs** — Check **View > Output > Mantra** for detailed logs including which microphone is being used.
+- **Logs** — Check **View > Output > Mantra** for detailed logs including which microphone is being used. The sidebar Activity Log also shows a history of all transcripts and actions.
 
 ---
 
@@ -204,7 +205,7 @@ Open **Settings > Extensions > Mantra** to adjust:
 
 Over 75 pre-mapped VS Code commands. You can say these exactly or use natural variations (the LLM understands intent):
 
-> save, save all, new file, close file, close other files, close all files, reopen closed editor, undo, redo, cut, copy, select all, toggle line comment, toggle block comment, format document, format selection, rename symbol, quick fix, organize imports, expand selection, shrink selection, select next occurrence, duplicate line down, duplicate line up, move line up, move line down, add cursor above, add cursor below, fold all, unfold all, toggle word wrap, find, replace, find in files, replace in files, back, forward, next tab, previous tab, tab one through tab nine, page up, page down, go to definition, peek definition, go to references, go to implementation, jump to bracket, focus editor, focus first editor, focus second editor, focus sidebar, focus panel, toggle output, toggle sidebar, toggle panel, toggle zen mode, split editor, toggle minimap, zoom in, zoom out, reset zoom, toggle terminal, focus terminal, new terminal, next terminal, previous terminal, focus claude, new conversation, accept changes, reject changes, focus explorer, focus search, focus source control, focus debug, focus extensions, show command palette, quick open, toggle breakpoint, start debugging, stop debugging, continue debugging, step over, step into, step out.
+> save, save all, new file, close file, close other files, close all files, reopen closed editor, undo, redo, cut, copy, paste, select all, toggle line comment, toggle block comment, format document, format selection, rename symbol, quick fix, organize imports, expand selection, shrink selection, select next occurrence, duplicate line down, duplicate line up, move line up, move line down, add cursor above, add cursor below, fold all, unfold all, toggle word wrap, find, replace, find in files, replace in files, back, forward, next tab, previous tab, tab one through tab nine, page up, page down, go to definition, peek definition, go to references, go to implementation, jump to bracket, focus editor, focus first editor, focus second editor, focus sidebar, focus panel, toggle output, toggle sidebar, toggle panel, toggle zen mode, split editor, toggle minimap, zoom in, zoom out, reset zoom, toggle terminal, focus terminal, new terminal, next terminal, previous terminal, focus claude, new conversation, accept changes, reject changes, focus explorer, focus search, focus source control, focus debug, focus extensions, show command palette, quick open, toggle breakpoint, start debugging, stop debugging, continue debugging, step over, step into, step out.
 
 ---
 

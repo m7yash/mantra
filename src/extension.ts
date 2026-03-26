@@ -12,7 +12,7 @@ import {
   claudeResume, claudeNewConversation, claudeSetModel,
   claudeHelp, claudeStatus, claudeCompact, claudeUndo, claudeInterrupt,
 } from './claude';
-import { MantraSidebarProvider } from './sidebarProvider';
+import { MantraSidebarProvider, LogEntry } from './sidebarProvider';
 import { exec } from 'child_process';
 import { initTerminalHistory, getLastTerminalOutput, getFullTerminalHistory, formatTerminalContext } from './terminalHistory';
 import ffmpegStatic from 'ffmpeg-static';
@@ -29,6 +29,85 @@ let sidebar: MantraSidebarProvider | null = null;
 let __mantraPaused = false;
 // Guard against double-entry into the listening loop
 let __mantraSessionActive = false;
+
+/** Push a log entry to the sidebar activity log. */
+function pushLog(kind: LogEntry['kind'], text: string, diff?: string): void {
+  if (!sidebar) return;
+  const time = new Date().toLocaleTimeString('en-US', { hour12: false, hour: '2-digit', minute: '2-digit', second: '2-digit' });
+  sidebar.pushLog({ time, kind, text, diff });
+}
+
+/** Produce a compact unified-style diff between two texts (line-based). */
+function makeUnifiedDiff(oldText: string, newText: string, filename: string): string {
+  const oldLines = oldText.split(/\r?\n/);
+  const newLines = newText.split(/\r?\n/);
+
+  // Simple LCS-based diff
+  const n = oldLines.length, m = newLines.length;
+  const W = m + 1;
+  const dp = new Uint16Array((n + 1) * W);
+  const idx = (i: number, j: number) => i * W + j;
+  for (let i = n - 1; i >= 0; i--) {
+    for (let j = m - 1; j >= 0; j--) {
+      dp[idx(i, j)] = oldLines[i] === newLines[j]
+        ? dp[idx(i + 1, j + 1)] + 1
+        : Math.max(dp[idx(i + 1, j)], dp[idx(i, j + 1)]);
+    }
+  }
+
+  // Walk to collect hunks
+  const ops: Array<{ type: '=' | '+' | '-'; line: string; oldIdx: number; newIdx: number }> = [];
+  let i = 0, j = 0;
+  while (i < n && j < m) {
+    if (oldLines[i] === newLines[j]) {
+      ops.push({ type: '=', line: oldLines[i], oldIdx: i, newIdx: j });
+      i++; j++;
+    } else if (dp[idx(i + 1, j)] >= dp[idx(i, j + 1)]) {
+      ops.push({ type: '-', line: oldLines[i], oldIdx: i, newIdx: j });
+      i++;
+    } else {
+      ops.push({ type: '+', line: newLines[j], oldIdx: i, newIdx: j });
+      j++;
+    }
+  }
+  while (i < n) { ops.push({ type: '-', line: oldLines[i], oldIdx: i, newIdx: m }); i++; }
+  while (j < m) { ops.push({ type: '+', line: newLines[j], oldIdx: n, newIdx: j }); j++; }
+
+  // Group into hunks with 2 lines of context
+  const CTX = 2;
+  const hunks: string[] = [];
+  let hi = 0;
+  while (hi < ops.length) {
+    if (ops[hi].type === '=') { hi++; continue; }
+    // Found a change — expand context around it
+    const start = Math.max(0, hi - CTX);
+    let end = hi;
+    while (end < ops.length) {
+      if (ops[end].type !== '=') { end++; continue; }
+      // Check if next change is within context distance
+      let peek = end;
+      while (peek < ops.length && ops[peek].type === '=' && peek - end < CTX * 2) peek++;
+      if (peek < ops.length && ops[peek].type !== '=') { end = peek; continue; }
+      break;
+    }
+    end = Math.min(ops.length, end + CTX);
+
+    const oldStart = ops[start].oldIdx + 1;
+    const newStart = ops[start].newIdx + 1;
+    let oldCount = 0, newCount = 0;
+    const lines: string[] = [];
+    for (let k = start; k < end; k++) {
+      if (ops[k].type === '=') { lines.push(' ' + ops[k].line); oldCount++; newCount++; }
+      else if (ops[k].type === '-') { lines.push('-' + ops[k].line); oldCount++; }
+      else { lines.push('+' + ops[k].line); newCount++; }
+    }
+    hunks.push(`@@ -${oldStart},${oldCount} +${newStart},${newCount} @@\n${lines.join('\n')}`);
+    hi = end;
+  }
+
+  if (!hunks.length) return '';
+  return `--- ${filename}\n+++ ${filename}\n${hunks.join('\n')}`;
+}
 
 /** If the prompt references terminal output/errors, save terminal history to a temp file and reference it. */
 const TERMINAL_CONTEXT_RE = /\b(error|fix|debug|wrong|fail|broke|broken|crash|issue|bug|output|terminal|what happened|went wrong|doesn't work|not working|won't run)\b/i;
@@ -764,11 +843,13 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 
           console.log('[Mantra] Transcript: ', transcript);
           sidebar?.postState({ lastTranscript: transcript });
+          pushLog('transcript', transcript);
 
           // --- PAUSE/RESUME interception (pre-LLM) ---
           const t = transcript.trim().toLowerCase();
           if (/(^|\b)(pause|stop listening)(\b|$)/.test(t)) {
             vscode.window.showInformationMessage('Pausing Mantra...use keyboard shortcut to resume');
+            pushLog('command', 'Paused listening');
             __mantraPaused = true;
             pauseRecording();
             return;
@@ -782,8 +863,10 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
           if (/^(execute|execute that|run that|hit enter|press enter|submit|enter)\.?$/i.test(t)) {
             if (isClaudeMode() || isClaudeTerminalActive()) {
               confirmClaude();
+              pushLog('command', 'Confirmed Claude (Enter)');
             } else {
               executeLastTyped();
+              pushLog('terminal', 'Executed last typed command');
             }
             return;
           }
@@ -796,40 +879,49 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
           // --- Claude diff actions (always available) ---
           if (/^(accept|accept changes|accept claude changes|accept diff)$/i.test(t)) {
             await acceptClaudeChanges();
+            pushLog('claude', 'Accepted Claude changes');
             return;
           }
           if (/^(reject|reject changes|reject claude changes|reject diff)$/i.test(t)) {
             await rejectClaudeChanges();
+            pushLog('claude', 'Rejected Claude changes');
             return;
           }
 
           // --- Claude CLI commands (always available) ---
           if (/^(new conversation|new claude conversation|new chat|clear conversation|clear chat|start over|start fresh)$/i.test(t)) {
             await claudeNewConversation();
+            pushLog('claude', 'New conversation');
             return;
           }
           if (/^(resume|resume conversation|resume chat|continue conversation|continue chat|pick up where we left off)$/i.test(t)) {
             await claudeResume();
+            pushLog('claude', 'Resume conversation');
             return;
           }
           if (/^(claude help|show help|help claude|what can you do)$/i.test(t)) {
             await claudeHelp();
+            pushLog('claude', 'Claude help');
             return;
           }
           if (/^(claude status|show status|status)$/i.test(t) && isClaudeMode()) {
             await claudeStatus();
+            pushLog('claude', 'Claude status');
             return;
           }
           if (/^(compact|compact conversation|summarize conversation|compact chat)$/i.test(t) && isClaudeMode()) {
             await claudeCompact();
+            pushLog('claude', 'Compact conversation');
             return;
           }
           if (/^(undo|undo that|undo last|undo claude)$/i.test(t) && isClaudeMode()) {
             await claudeUndo();
+            pushLog('claude', 'Claude undo');
             return;
           }
           if (/^(stop|cancel|interrupt|stop claude|cancel claude|nevermind|never mind)$/i.test(t) && isClaudeMode()) {
             claudeInterrupt();
+            pushLog('claude', 'Interrupted Claude');
             return;
           }
           // "set model to X" / "use sonnet" / "switch to opus" etc.
@@ -863,6 +955,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
                 if (err) console.warn('[Mantra] osascript keystroke failed:', err.message);
               });
               vscode.window.setStatusBarMessage(`⌨️ ${modsRaw.trim()} ${key}`, 1500);
+              pushLog('command', `Keystroke: ${modsRaw.trim()} ${key}`);
               return;
             }
           }
@@ -890,6 +983,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
                 if (err) vscode.window.showWarningMessage(`Could not open "${appName}": ${err.message}`);
               });
               vscode.window.setStatusBarMessage(`Opening ${appName}...`, 2000);
+              pushLog('command', `Open app: ${appName}`);
               return;
             }
           }
@@ -917,24 +1011,27 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
             if (isClaudeMode()) setClaudeMode(false);
             await vscode.commands.executeCommand('workbench.action.focusFirstEditorGroup');
             vscode.window.setStatusBarMessage('Focused editor', 1500);
+            pushLog('command', 'Focus editor');
             return;
           }
           if (/^(focus terminal|go to terminal|switch to terminal|back to terminal)$/i.test(tc)) {
             if (isClaudeMode()) setClaudeMode(false);
             await vscode.commands.executeCommand('workbench.action.terminal.focus');
+            pushLog('command', 'Focus terminal');
             return;
           }
 
           // --- enter Claude mode explicitly ---
           if (/^(focus claude|switch to claude|go to claude|open claude|claude mode|talk to claude)$/i.test(t)) {
             await focusClaudePanel();
+            pushLog('command', 'Focus Claude');
             return;
           }
 
           // --- quick command paths ---
           const maybeHandled = await tryExecuteMappedCommand(transcript);
-          if (maybeHandled) return;
-          if (await handleTextCommand(transcript, context)) return;
+          if (maybeHandled) { pushLog('command', transcript); return; }
+          if (await handleTextCommand(transcript, context)) { pushLog('command', transcript); return; }
 
           // --- LLM disabled? ---
           const commandsOnly = vscode.workspace.getConfiguration('mantra').get<boolean>('commandsOnly', false);
@@ -985,6 +1082,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
               outputChannel.show(true);
             }
             vscode.window.showErrorMessage(msg);
+            pushLog('error', msg);
             return;
           }
 
@@ -995,8 +1093,10 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
               const shouldWait = /\b(don'?t (run|execute)|but (wait|hold|don'?t)|and (wait|hold)|just type|type it|don'?t hit enter|wait)\b/i.test(transcript);
               if (shouldWait) {
                 typeInTerminal(shellCmd);
+                pushLog('terminal', `Typed: ${shellCmd}`);
               } else {
                 executeInTerminal(shellCmd);
+                pushLog('terminal', `Executed: ${shellCmd}`);
               }
             }
           } else if (result.type === 'claude') {
@@ -1010,26 +1110,37 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
                 // Not at Claude — open terminal and auto-submit.
                 await sendToClaudePanel(buildClaudePrompt(prompt));
               }
+              pushLog('claude', prompt);
             }
           } else if (result.type === 'command') {
             const phrase = (result.payload || '').toString().trim();
             const ok =
               (await handleTextCommand(phrase, context)) ||
               (await tryExecuteMappedCommand(phrase));
-            if (!ok) vscode.window.showWarningMessage(`Unknown command: ${phrase}`);
+            if (!ok) {
+              vscode.window.showWarningMessage(`Unknown command: ${phrase}`);
+              pushLog('error', `Unknown command: ${phrase}`);
+            } else {
+              pushLog('command', phrase);
+            }
           } else if (result.type === 'modification') {
             if (!editor) {
               vscode.window.showWarningMessage('No active editor for modification.');
             } else {
+              const oldText = editor.document.getText();
               const newText = stripMarkdownCodeFence(result.payload ?? '');
+              const filename = editor.document.fileName.split(/[\\/]/).pop() || 'file';
+              const diff = makeUnifiedDiff(oldText, newText, filename);
               await replaceDocumentWithHighlight(editor, newText);
               vscode.window.setStatusBarMessage('Applied modification from LLM', 3000);
+              pushLog('modification', `Modified ${filename}`, diff || undefined);
             }
           } else {
             // "question" type — if Claude is active, type into Claude;
             // otherwise show answer in the output panel.
             if (isClaudeMode() || isClaudeTerminalActive()) {
               typeInClaude(transcript);
+              pushLog('claude', transcript);
             } else {
               const answer = result.payload;
               if ((answer || '').toLowerCase().replace(/[^\w\s]/g, '').trim() === 'thank you') return;
@@ -1045,6 +1156,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
               } else {
                 vscode.window.showInformationMessage(answer || '(no answer)');
               }
+              pushLog('question', (answer || '').trim().substring(0, 200));
             }
           }
 
