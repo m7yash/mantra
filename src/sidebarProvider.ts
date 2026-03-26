@@ -5,13 +5,14 @@ export interface LogEntry {
   kind: 'transcript' | 'command' | 'modification' | 'terminal' | 'question' | 'claude' | 'codex' | 'error' | 'info';
   text: string;           // main text
   diff?: string;          // unified diff for modifications
+  diffId?: number;        // ID to open full diff in a tab
 }
 
 export interface SidebarState {
   volume?: number;        // 0-1 RMS level
   memory?: string;        // conversation memory text
   mic?: string;           // current microphone name
-  provider?: string;      // e.g. "groq / gpt-oss-20b"
+  provider?: string;      // e.g. "Groq" or "Cerebras"
   lastTranscript?: string;
   listening?: boolean;
   testing?: boolean;      // mic test mode
@@ -21,9 +22,9 @@ export interface SidebarState {
   agentBackend?: string;  // 'claude' | 'codex'
   agentInstalled?: boolean; // whether selected agent CLI is installed
   llmProvider?: string;   // 'groq' | 'cerebras'
-  llmModel?: string;      // active router model id
-  selectionModel?: string; // active selection model id
   commandsOnly?: boolean; // commands-only mode toggle
+  availableMics?: Array<{label: string, args: string}>; // enumerated microphones
+  micArgs?: string;       // currently selected mic args string
 }
 
 export class MantraSidebarProvider implements vscode.WebviewViewProvider {
@@ -35,9 +36,9 @@ export class MantraSidebarProvider implements vscode.WebviewViewProvider {
   private _onPromptEdit?: (key: string, text: string) => void;
   private _onAgentChange?: (agent: string) => void;
   private _onProviderChange?: (provider: string) => void;
-  private _onModelChange?: (model: string) => void;
-  private _onSelectionModelChange?: (model: string) => void;
   private _onInstallAgent?: () => void;
+  private _onMicChange?: (args: string) => void;
+  private _onOpenDiffTab?: (diffId: number) => void;
 
   constructor(private readonly _extensionUri: vscode.Uri) {}
 
@@ -61,19 +62,19 @@ export class MantraSidebarProvider implements vscode.WebviewViewProvider {
     this._onProviderChange = cb;
   }
 
-  /** Register a callback for when the user changes the LLM model. */
-  public onModelChange(cb: (model: string) => void): void {
-    this._onModelChange = cb;
-  }
-
-  /** Register a callback for when the user changes the selection model. */
-  public onSelectionModelChange(cb: (model: string) => void): void {
-    this._onSelectionModelChange = cb;
-  }
-
   /** Register a callback for when the user clicks the install button. */
   public onInstallAgent(cb: () => void): void {
     this._onInstallAgent = cb;
+  }
+
+  /** Register a callback for when the user changes the microphone dropdown. */
+  public onMicChange(cb: (args: string) => void): void {
+    this._onMicChange = cb;
+  }
+
+  /** Register a callback for when the user clicks "Open in tab" on a diff. */
+  public onOpenDiffTab(cb: (diffId: number) => void): void {
+    this._onOpenDiffTab = cb;
   }
 
   /** Push live state to the webview. Caches so the sidebar can restore on re-open. */
@@ -123,17 +124,17 @@ export class MantraSidebarProvider implements vscode.WebviewViewProvider {
         if (this._onProviderChange && typeof msg.provider === 'string') {
           this._onProviderChange(msg.provider);
         }
-      } else if (msg.type === 'modelChange') {
-        if (this._onModelChange && typeof msg.model === 'string') {
-          this._onModelChange(msg.model);
-        }
-      } else if (msg.type === 'selectionModelChange') {
-        if (this._onSelectionModelChange && typeof msg.model === 'string') {
-          this._onSelectionModelChange(msg.model);
-        }
       } else if (msg.type === 'installAgent') {
         if (this._onInstallAgent) {
           this._onInstallAgent();
+        }
+      } else if (msg.type === 'micChange') {
+        if (this._onMicChange && typeof msg.args === 'string') {
+          this._onMicChange(msg.args);
+        }
+      } else if (msg.type === 'openDiffTab') {
+        if (this._onOpenDiffTab && typeof msg.diffId === 'number') {
+          this._onOpenDiffTab(msg.diffId);
         }
       } else if (msg.type === 'ready') {
         // Webview loaded — push cached state so it's populated immediately
@@ -559,25 +560,11 @@ export class MantraSidebarProvider implements vscode.WebviewViewProvider {
     </select>
   </div>
   <div style="padding:2px 0;">
-    <div style="font-size:11px;color:var(--vscode-descriptionForeground);padding:2px 0;">Router Model</div>
-    <select id="modelSelect" class="dropdown">
-      <option value="openai/gpt-oss-20b">GPT-OSS 20B (fast)</option>
-      <option value="openai/gpt-oss-120b">GPT-OSS 120B (capable)</option>
+    <div style="font-size:11px;color:var(--vscode-descriptionForeground);padding:2px 0;">Microphone</div>
+    <select id="micSelect" class="dropdown">
+      <option value="">Detecting...</option>
     </select>
   </div>
-  <div style="padding:2px 0;">
-    <div style="font-size:11px;color:var(--vscode-descriptionForeground);padding:2px 0;">Selection Model</div>
-    <select id="selectionModelSelect" class="dropdown">
-      <option value="openai/gpt-oss-20b">GPT-OSS 20B (fast)</option>
-      <option value="openai/gpt-oss-120b">GPT-OSS 120B (capable)</option>
-    </select>
-  </div>
-
-  <button class="row" data-cmd="mantra.selectMicrophone">
-    <span class="row-icon">&#127908;</span>
-    <span class="row-label">Microphone</span>
-    <span class="row-hint">Ctrl+Shift+4</span>
-  </button>
   <button class="row" data-cmd="mantra.toggleCommandsOnly" id="cmdOnlyBtn">
     <span class="row-icon">&#8644;</span>
     <span class="row-label" id="cmdOnlyLabel">Commands-Only Mode</span>
@@ -657,10 +644,9 @@ export class MantraSidebarProvider implements vscode.WebviewViewProvider {
     const installMsg = document.getElementById('installMsg');
     const installBtn = document.getElementById('installBtn');
     const providerSelect = document.getElementById('providerSelect');
-    const modelSelect = document.getElementById('modelSelect');
-    const selectionModelSelect = document.getElementById('selectionModelSelect');
     const focusAgentLabel = document.getElementById('focusAgentLabel');
     const cmdOnlyHint = document.getElementById('cmdOnlyHint');
+    const micSelect = document.getElementById('micSelect');
 
     toggleBtn.addEventListener('click', () => {
       if (listening) {
@@ -697,32 +683,12 @@ export class MantraSidebarProvider implements vscode.WebviewViewProvider {
     // LLM Provider dropdown
     providerSelect.addEventListener('change', () => {
       vscode.postMessage({ type: 'providerChange', provider: providerSelect.value });
-      // Update model options based on provider
-      updateModelOptions(providerSelect.value);
     });
 
-    // Model dropdowns
-    modelSelect.addEventListener('change', () => {
-      vscode.postMessage({ type: 'modelChange', model: modelSelect.value });
+    // Microphone dropdown
+    micSelect.addEventListener('change', () => {
+      vscode.postMessage({ type: 'micChange', args: micSelect.value });
     });
-    selectionModelSelect.addEventListener('change', () => {
-      vscode.postMessage({ type: 'selectionModelChange', model: selectionModelSelect.value });
-    });
-
-    function updateModelOptions(provider) {
-      modelSelect.innerHTML = '';
-      selectionModelSelect.innerHTML = '';
-      if (provider === 'groq') {
-        const opts = '<option value="openai/gpt-oss-20b">GPT-OSS 20B (fast)</option>'
-          + '<option value="openai/gpt-oss-120b">GPT-OSS 120B (capable)</option>';
-        modelSelect.innerHTML = opts;
-        selectionModelSelect.innerHTML = opts;
-      } else {
-        const opts = '<option value="gpt-oss-120b">GPT-OSS 120B</option>';
-        modelSelect.innerHTML = opts;
-        selectionModelSelect.innerHTML = opts;
-      }
-    }
 
     function escHtml(s) { const d = document.createElement('div'); d.textContent = s; return d.innerHTML; }
 
@@ -750,6 +716,9 @@ export class MantraSidebarProvider implements vscode.WebviewViewProvider {
 
       if (entry.diff) {
         html += '<br><span class="log-diff-toggle" onclick="var d=document.getElementById(\\'' + id + '\\');d.style.display=d.style.display===\\'none\\'?\\'block\\':\\'none\\'">Show diff</span>';
+        if (entry.diffId !== undefined) {
+          html += ' &middot; <span class="log-diff-toggle" onclick="vscode.postMessage({type:\\'openDiffTab\\',diffId:' + entry.diffId + '})">Open in tab</span>';
+        }
         html += '<div class="log-diff" id="' + id + '">' + renderDiffHtml(entry.diff) + '</div>';
       }
 
@@ -819,15 +788,20 @@ export class MantraSidebarProvider implements vscode.WebviewViewProvider {
 
       if (msg.llmProvider !== undefined) {
         providerSelect.value = msg.llmProvider;
-        updateModelOptions(msg.llmProvider);
       }
 
-      if (msg.llmModel !== undefined) {
-        modelSelect.value = msg.llmModel;
+      if (msg.availableMics !== undefined) {
+        micSelect.innerHTML = '';
+        for (const mic of msg.availableMics) {
+          const opt = document.createElement('option');
+          opt.value = mic.args;
+          opt.textContent = mic.label;
+          micSelect.appendChild(opt);
+        }
       }
 
-      if (msg.selectionModel !== undefined) {
-        selectionModelSelect.value = msg.selectionModel;
+      if (msg.micArgs !== undefined) {
+        micSelect.value = msg.micArgs;
       }
 
       if (msg.commandsOnly !== undefined) {

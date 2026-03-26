@@ -39,11 +39,26 @@ let __mantraPaused = false;
 // Guard against double-entry into the listening loop
 let __mantraSessionActive = false;
 
+// ── Diff store for "Open in tab" ──
+const diffStore = new Map<number, { oldText: string; newText: string; filename: string }>();
+let diffIdCounter = 0;
+
+function storeDiff(oldText: string, newText: string, filename: string): number {
+  const id = diffIdCounter++;
+  diffStore.set(id, { oldText, newText, filename });
+  // Keep at most 50 entries to avoid unbounded memory growth
+  if (diffStore.size > 50) {
+    const oldest = diffStore.keys().next().value;
+    if (oldest !== undefined) diffStore.delete(oldest);
+  }
+  return id;
+}
+
 /** Push a log entry to the sidebar activity log. */
-function pushLog(kind: LogEntry['kind'], text: string, diff?: string): void {
+function pushLog(kind: LogEntry['kind'], text: string, diff?: string, diffId?: number): void {
   if (!sidebar) return;
   const time = new Date().toLocaleTimeString('en-US', { hour12: false, hour: '2-digit', minute: '2-digit', second: '2-digit' });
-  sidebar.pushLog({ time, kind, text, diff });
+  sidebar.pushLog({ time, kind, text, diff, diffId });
 }
 
 /** Get the currently selected agent backend from settings. */
@@ -229,6 +244,112 @@ function buildClaudePrompt(prompt: string): string {
   return prompt;
 }
 
+// ── Microphone enumeration (shared by sidebar dropdown & command palette) ──
+
+function resolveFfmpegCmd(): string {
+  const env = (process.env.MANTRA_FFMPEG_PATH || '').trim();
+  if (env) return env;
+  const cmd = process.platform === 'win32' ? 'ffmpeg.exe' : 'ffmpeg';
+  try {
+    if (spawnSync(cmd, ['-version'], { encoding: 'utf8' }).status === 0) return cmd;
+  } catch { }
+  const staticPath = (ffmpegStatic as unknown as string) || '';
+  if (staticPath) return staticPath;
+  throw new Error('FFmpeg not found. Install ffmpeg or set MANTRA_FFMPEG_PATH.');
+}
+
+function listWindowsDshow(ff: string): string[] {
+  try {
+    const r = spawnSync(ff, ['-hide_banner', '-f', 'dshow', '-list_devices', 'true', '-i', 'dummy'], { encoding: 'utf8' });
+    const out = (r.stdout || '') + (r.stderr || '');
+    const lines = out.split(/\r?\n/);
+    const audioStart = lines.findIndex(l => /DirectShow audio devices/i.test(l));
+    if (audioStart < 0) return [];
+    const devs: string[] = [];
+    for (let i = audioStart + 1; i < lines.length; i++) {
+      const m = lines[i].match(/"([^"]+)"/);
+      if (m) devs.push(m[1]);
+      if (/DirectShow video devices/i.test(lines[i])) break;
+    }
+    return Array.from(new Set(devs));
+  } catch { return []; }
+}
+
+function listMacAvfoundation(ff: string): { items: Array<{ label: string, index: string }>, supported: boolean } {
+  try {
+    const r = spawnSync(ff, ['-hide_banner', '-f', 'avfoundation', '-list_devices', 'true', '-i', ''], { encoding: 'utf8' });
+    const out = (r.stdout || '') + (r.stderr || '');
+    if (/Unknown input format.*avfoundation/i.test(out)) {
+      return { items: [], supported: false };
+    }
+    const lines = out.split(/\r?\n/);
+    const start = lines.findIndex(l => /AVFoundation audio devices/i.test(l));
+    const items: Array<{ label: string, index: string }> = [];
+    if (start >= 0) {
+      for (let i = start + 1; i < lines.length; i++) {
+        const line = lines[i];
+        if (/AVFoundation video devices/i.test(line)) break;
+        const m = line.match(/\[(\d+)\]\s*(?:"([^"]+)"|(.+))$/);
+        if (m) {
+          const idx = m[1];
+          const name = (m[2] || m[3] || '').trim();
+          if (name) items.push({ index: idx, label: name });
+        }
+      }
+    }
+    return { items, supported: true };
+  } catch { return { items: [], supported: false }; }
+}
+
+function listPulseSources(): Array<{ name: string }> {
+  try {
+    const r = spawnSync('pactl', ['list', 'short', 'sources'], { encoding: 'utf8' });
+    if (r.status !== 0) return [];
+    const items: Array<{ name: string }> = [];
+    for (const line of (r.stdout || '').split(/\r?\n/)) {
+      const parts = line.trim().split(/\s+/);
+      if (parts.length >= 2) {
+        const name = parts[1];
+        if (name && !/\.monitor$/.test(name)) items.push({ name });
+      }
+    }
+    return items;
+  } catch { return []; }
+}
+
+/** Enumerate available microphones for the current platform. */
+function enumerateMicrophones(): Array<{ label: string; args: string }> {
+  let ff = '';
+  try { ff = resolveFfmpegCmd(); } catch { }
+
+  const items: Array<{ label: string; args: string }> = [];
+
+  if (process.platform === 'win32') {
+    items.push({ label: 'System Default (WASAPI)', args: '-f wasapi -i default' });
+    const dshow = ff ? listWindowsDshow(ff) : [];
+    for (const dev of dshow) {
+      const quoted = dev.includes(' ') ? `"${dev}"` : dev;
+      items.push({ label: dev, args: `-f dshow -i audio=${quoted}` });
+    }
+  } else if (process.platform === 'darwin') {
+    items.push({ label: 'System Default (AVFoundation)', args: '-f avfoundation -i :default' });
+    if (ff) {
+      const { items: av } = listMacAvfoundation(ff);
+      for (const a of av) {
+        items.push({ label: a.label, args: `-f avfoundation -i :${a.index}` });
+      }
+    }
+  } else {
+    items.push({ label: 'Default (PulseAudio)', args: '-f pulse -i default' });
+    const srcs = listPulseSources();
+    for (const s of srcs) {
+      items.push({ label: s.name, args: `-f pulse -i ${s.name}` });
+    }
+  }
+
+  return items;
+}
+
 function syncFromSettings() {
   const cfg = vscode.workspace.getConfiguration('mantra');
   const cerebras = (cfg.get<string>('cerebrasApiKey') || '').trim();
@@ -236,7 +357,6 @@ function syncFromSettings() {
   const deep = (cfg.get<string>('deepgramApiKey') || '').trim();
   const effort = (cfg.get<string>('reasoningEffort') || 'low').trim();
   const provider = (cfg.get<string>('llmProvider') || 'groq').trim();
-  const groqModel = (cfg.get<string>('groqModel') || 'openai/gpt-oss-20b').trim();
 
   if (cerebras) process.env.CEREBRAS_API_KEY = cerebras;
   if (groq) process.env.GROQ_API_KEY = groq;
@@ -246,7 +366,6 @@ function syncFromSettings() {
   if (model) {
     model.setProvider(provider as any);
     if (groq) model.setGroqApiKey(groq);
-    model.setGroqModel(groqModel);
   }
 }
 
@@ -832,7 +951,6 @@ async function ensureApiKeys(context: vscode.ExtensionContext): Promise<boolean>
       }
       await context.secrets.store('GROQ_API_KEY', groqApiKey);
       model.setGroqApiKey(groqApiKey);
-      model.setGroqModel((cfg.get<string>('groqModel') || 'openai/gpt-oss-20b').trim());
     } else {
       // Cerebras API key: 1) settings, 2) env var, 3) secret storage, 4) prompt user
       const fromSettings = (cfg.get<string>('cerebrasApiKey') || '').trim();
@@ -875,7 +993,6 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       if (
         e.affectsConfiguration('mantra.cerebrasApiKey') ||
         e.affectsConfiguration('mantra.groqApiKey') ||
-        e.affectsConfiguration('mantra.groqModel') ||
         e.affectsConfiguration('mantra.llmProvider') ||
         e.affectsConfiguration('mantra.deepgramApiKey') ||
         e.affectsConfiguration('mantra.reasoningEffort') ||
@@ -956,8 +1073,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     {
       const cfg = vscode.workspace.getConfiguration('mantra');
       const prov = cfg.get<string>('llmProvider') || 'groq';
-      const gm = cfg.get<string>('groqModel') || 'openai/gpt-oss-20b';
-      const provLabel = prov === 'groq' ? `Groq / ${gm.replace('openai/', '')}` : 'Cerebras';
+      const provLabel = prov === 'groq' ? 'Groq' : 'Cerebras';
       sidebar?.postState({ listening: true, provider: provLabel });
     }
 
@@ -1386,7 +1502,8 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
               editor.selection = new vscode.Selection(newPos, newPos);
 
               vscode.window.setStatusBarMessage('Applied selection modification from LLM', 3000);
-              pushLog('modification', `Modified selection in ${filename} (lines ${startLine + 1}–${endLine + 1})`, diff || undefined);
+              const diffId = storeDiff(originalText, rawPayload, filename);
+              pushLog('modification', `Modified selection in ${filename} (lines ${startLine + 1}–${endLine + 1})`, diff || undefined, diffId);
             } else {
               const oldText = editor.document.getText();
               const newText = stripMarkdownCodeFence(result.payload ?? '');
@@ -1394,7 +1511,8 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
               const diff = makeUnifiedDiff(oldText, newText, filename);
               await replaceDocumentWithHighlight(editor, newText);
               vscode.window.setStatusBarMessage('Applied modification from LLM', 3000);
-              pushLog('modification', `Modified ${filename}`, diff || undefined);
+              const diffId = storeDiff(oldText, newText, filename);
+              pushLog('modification', `Modified ${filename}`, diff || undefined, diffId);
             }
           } else {
             // "question" type — if agent is active, type into it;
@@ -1489,143 +1607,13 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     });
 
   const selectMicDisposable = vscode.commands.registerCommand('mantra.selectMicrophone', async () => {
-    function resolveFfmpegCmd(): string {
-      const env = (process.env.MANTRA_FFMPEG_PATH || '').trim();
-      if (env) return env;
-      const cmd = process.platform === 'win32' ? 'ffmpeg.exe' : 'ffmpeg';
-      try {
-        if (spawnSync(cmd, ['-version'], { encoding: 'utf8' }).status === 0) return cmd;
-      } catch { }
-      const staticPath = (ffmpegStatic as unknown as string) || '';
-      if (staticPath) return staticPath;
-      throw new Error('FFmpeg not found. Install ffmpeg or set MANTRA_FFMPEG_PATH.');
-    }
-
-    // ---------- Windows (DirectShow) ----------
-    function listWindowsDshow(ff: string): string[] {
-      try {
-        const r = spawnSync(ff, ['-hide_banner', '-f', 'dshow', '-list_devices', 'true', '-i', 'dummy'], { encoding: 'utf8' });
-        const out = (r.stdout || '') + (r.stderr || '');
-        const lines = out.split(/\r?\n/);
-        const audioStart = lines.findIndex(l => /DirectShow audio devices/i.test(l));
-        if (audioStart < 0) return [];
-        const devs: string[] = [];
-        for (let i = audioStart + 1; i < lines.length; i++) {
-          const m = lines[i].match(/"([^"]+)"/);
-          if (m) devs.push(m[1]);
-          if (/DirectShow video devices/i.test(lines[i])) break;
-        }
-        return Array.from(new Set(devs));
-      } catch { return []; }
-    }
-
-    // ---------- macOS (AVFoundation) ----------
-    function listMacAvfoundation(ff: string): { items: Array<{ label: string, index: string }>, supported: boolean } {
-      try {
-        const r = spawnSync(ff, ['-hide_banner', '-f', 'avfoundation', '-list_devices', 'true', '-i', ''], { encoding: 'utf8' });
-        const out = (r.stdout || '') + (r.stderr || '');
-        if (/Unknown input format.*avfoundation/i.test(out)) {
-          return { items: [], supported: false };
-        }
-        const lines = out.split(/\r?\n/);
-        const start = lines.findIndex(l => /AVFoundation audio devices/i.test(l));
-        const items: Array<{ label: string, index: string }> = [];
-        if (start >= 0) {
-          for (let i = start + 1; i < lines.length; i++) {
-            const line = lines[i];
-            if (/AVFoundation video devices/i.test(line)) break;
-            // Accept both: [0] Built-in Microphone  OR  [0] "Built-in Microphone"
-            const m = line.match(/\[(\d+)\]\s*(?:"([^"]+)"|(.+))$/);
-            if (m) {
-              const idx = m[1];
-              const name = (m[2] || m[3] || '').trim();
-              if (name) items.push({ index: idx, label: name });
-            }
-          }
-        }
-        return { items, supported: true };
-      } catch { return { items: [], supported: false }; }
-    }
-
-    // ---------- Linux / WSLg (PulseAudio) ----------
-    function listPulseSources(): Array<{ name: string }> {
-      try {
-        const r = spawnSync('pactl', ['list', 'short', 'sources'], { encoding: 'utf8' });
-        if (r.status !== 0) return [];
-        const items: Array<{ name: string }> = [];
-        for (const line of (r.stdout || '').split(/\r?\n/)) {
-          const parts = line.trim().split(/\s+/);
-          if (parts.length >= 2) {
-            const name = parts[1];
-            if (name && !/\.monitor$/.test(name)) items.push({ name });
-          }
-        }
-        return items;
-      } catch { return []; }
-    }
-
-    const cfg = vscode.workspace.getConfiguration('mantra');
-    let ff = '';
-    try { ff = resolveFfmpegCmd(); } catch { }
+    const mics = enumerateMicrophones();
 
     type MicItem = vscode.QuickPickItem & { args: string };
-    const items: MicItem[] = [];
-
-    if (process.platform === 'win32') {
-      items.push({
-        label: '$(device-camera-microphone) System Default (WASAPI)',
-        description: 'Use the system default input',
-        args: '-f wasapi -i default'
-      });
-      const dshow = ff ? listWindowsDshow(ff) : [];
-      for (const dev of dshow) {
-        const quoted = dev.includes(' ') ? `"${dev}"` : dev;
-        items.push({
-          label: `$(radio-tower) ${dev}`,
-          description: 'DirectShow device',
-          detail: 'FFmpeg: -f dshow -i audio=…',
-          args: `-f dshow -i audio=${quoted}`
-        });
-      }
-    } else if (process.platform === 'darwin') {
-      items.push({
-        label: '$(device-camera-microphone) System Default (AVFoundation)',
-        description: 'Use the system default input',
-        args: '-f avfoundation -i :default'
-      });
-
-      if (ff) {
-        const { items: av, supported } = listMacAvfoundation(ff);
-        if (!supported) {
-          vscode.window.showWarningMessage(
-            'Your FFmpeg does not support AVFoundation. Install a Homebrew FFmpeg and restart VS Code: brew install ffmpeg'
-          );
-        }
-        for (const a of av) {
-          items.push({
-            label: `$(radio-tower) ${a.label}`,
-            description: `AVFoundation index ${a.index}`,
-            detail: 'FFmpeg: -f avfoundation -i :<index>',
-            args: `-f avfoundation -i :${a.index}`
-          });
-        }
-      }
-    } else {
-      items.push({
-        label: '$(device-camera-microphone) Default (PulseAudio)',
-        description: 'Use the default PulseAudio source',
-        args: '-f pulse -i default'
-      });
-      const srcs = listPulseSources();
-      for (const s of srcs) {
-        items.push({
-          label: `$(radio-tower) ${s.name}`,
-          description: 'PulseAudio source',
-          detail: 'FFmpeg: -f pulse -i <source>',
-          args: `-f pulse -i ${s.name}`
-        });
-      }
-    }
+    const items: MicItem[] = mics.map(m => ({
+      label: m.label,
+      args: m.args,
+    }));
 
     if (items.length === 0) {
       vscode.window.showErrorMessage('No microphones found. Ensure audio permissions are granted and FFmpeg is installed.');
@@ -1636,14 +1624,13 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       placeHolder: 'Select a microphone to use with Mantra',
       canPickMany: false,
       ignoreFocusOut: true,
-      matchOnDetail: true,
-      matchOnDescription: true
     });
     if (!pick) return;
 
+    const cfg = vscode.workspace.getConfiguration('mantra');
     await cfg.update('microphoneInput', pick.args, vscode.ConfigurationTarget.Global);
     vscode.window.setStatusBarMessage(`Mantra mic set: ${pick.label}`, 3000);
-    sidebar?.postState({ mic: pick.label });
+    sidebar?.postState({ mic: pick.label, micArgs: pick.args });
   });
 
   const openSettingsCmd = vscode.commands.registerCommand(
@@ -1733,27 +1720,6 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     console.log(`[Mantra] LLM provider changed to: ${provider}`);
   });
 
-  // Model change from sidebar
-  sidebar.onModelChange((modelId) => {
-    const cfg = vscode.workspace.getConfiguration('mantra');
-    const provider = cfg.get<string>('llmProvider') || 'groq';
-    if (provider === 'groq') {
-      cfg.update('groqModel', modelId, vscode.ConfigurationTarget.Global);
-      if (model) model.setGroqModel(modelId);
-    }
-    console.log(`[Mantra] LLM model changed to: ${modelId}`);
-  });
-
-  // Selection model change from sidebar
-  sidebar.onSelectionModelChange((modelId) => {
-    const cfg = vscode.workspace.getConfiguration('mantra');
-    const provider = cfg.get<string>('llmProvider') || 'groq';
-    if (provider === 'groq') {
-      cfg.update('groqSelectionModel', modelId, vscode.ConfigurationTarget.Global);
-    }
-    console.log(`[Mantra] Selection model changed to: ${modelId}`);
-  });
-
   // Install agent from sidebar
   sidebar.onInstallAgent(() => {
     const agent = getSelectedAgent();
@@ -1764,15 +1730,56 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     console.log(`[Mantra] Installing ${agent} via npm`);
   });
 
+  // Microphone change from sidebar dropdown
+  sidebar.onMicChange((args) => {
+    const cfg = vscode.workspace.getConfiguration('mantra');
+    cfg.update('microphoneInput', args, vscode.ConfigurationTarget.Global);
+    // Find the label for this args string
+    const mics = enumerateMicrophones();
+    const match = mics.find(m => m.args === args);
+    const label = match ? match.label : 'Custom';
+    sidebar?.postState({ mic: label, micArgs: args });
+    vscode.window.setStatusBarMessage(`Mantra mic set: ${label}`, 3000);
+    console.log(`[Mantra] Microphone changed to: ${label}`);
+  });
+
+  // Open full diff in a VS Code tab from sidebar
+  sidebar.onOpenDiffTab((diffId) => {
+    const data = diffStore.get(diffId);
+    if (!data) {
+      vscode.window.showWarningMessage('Diff data no longer available.');
+      return;
+    }
+    const oldUri = vscode.Uri.from({ scheme: 'mantra-diff', path: `/old/${diffId}/${data.filename}` });
+    const newUri = vscode.Uri.from({ scheme: 'mantra-diff', path: `/new/${diffId}/${data.filename}` });
+    vscode.commands.executeCommand('vscode.diff', oldUri, newUri, `${data.filename} (before \u2194 after)`);
+  });
+
+  // Register virtual document provider for diff tab content
+  const diffContentProvider: vscode.TextDocumentContentProvider = {
+    provideTextDocumentContent(uri: vscode.Uri): string {
+      const parts = uri.path.split('/');
+      // path: /side/id/filename
+      const side = parts[1]; // 'old' or 'new'
+      const id = parseInt(parts[2], 10);
+      const data = diffStore.get(id);
+      if (!data) return '';
+      return side === 'old' ? data.oldText : data.newText;
+    }
+  };
+  context.subscriptions.push(
+    vscode.workspace.registerTextDocumentContentProvider('mantra-diff', diffContentProvider)
+  );
+
   // Push initial state to sidebar
   {
     const cfg = vscode.workspace.getConfiguration('mantra');
     const agent = cfg.get<string>('agentBackend') || 'claude';
     const provider = cfg.get<string>('llmProvider') || 'groq';
-    const groqModel = cfg.get<string>('groqModel') || 'openai/gpt-oss-20b';
-    const groqSelModel = cfg.get<string>('groqSelectionModel') || 'openai/gpt-oss-20b';
     const installed = agent === 'claude' ? true : checkCliInstalled('codex');
     const cmdOnly = cfg.get<boolean>('commandsOnly', false);
+    const micArgs = cfg.get<string>('microphoneInput') || '';
+    const availableMics = enumerateMicrophones();
     sidebar.postState({
       routerPrompt: cfg.get<string>('prompt') || '',
       memoryPrompt: cfg.get<string>('memoryPrompt') || '',
@@ -1780,9 +1787,9 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       agentBackend: agent,
       agentInstalled: installed,
       llmProvider: provider,
-      llmModel: groqModel,
-      selectionModel: groqSelModel,
       commandsOnly: cmdOnly,
+      availableMics,
+      micArgs,
     });
   }
 

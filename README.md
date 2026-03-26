@@ -200,7 +200,6 @@ Open **Settings > Extensions > Mantra** to adjust:
 
 - **Agent Backend** — Choose between **Claude Code** (default) or **Codex CLI**. Only one agent can be active at a time.
 - **LLM Provider** — Choose between **Groq** (default) or **Cerebras**.
-- **Groq Model** — `openai/gpt-oss-20b` (faster, default) or `openai/gpt-oss-120b` (more capable).
 - **Reasoning Effort** — Low (default), medium, or high.
 - **Prompt** — Customize the LLM system prompt (also editable in the sidebar).
 - **Memory Manager Prompt** — Customize the prompt that summarizes session context (also editable in the sidebar).

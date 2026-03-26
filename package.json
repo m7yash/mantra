@@ -166,24 +166,6 @@
           "scope": "application",
           "editPresentation": "password"
         },
-        "mantra.groqModel": {
-          "type": "string",
-          "enum": [
-            "openai/gpt-oss-20b",
-            "openai/gpt-oss-120b"
-          ],
-          "default": "openai/gpt-oss-20b",
-          "description": "Router model on Groq. Used for routing, code edits, and answers."
-        },
-        "mantra.groqSelectionModel": {
-          "type": "string",
-          "enum": [
-            "openai/gpt-oss-20b",
-            "openai/gpt-oss-120b"
-          ],
-          "default": "openai/gpt-oss-20b",
-          "description": "Selection model on Groq. Used to determine edit scope (which lines to select/modify). Runs with low reasoning effort."
-        },
         "mantra.cerebrasApiKey": {
           "type": "string",
           "default": "",

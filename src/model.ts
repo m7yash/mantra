@@ -8,7 +8,7 @@ export type LlmProvider = 'cerebras' | 'groq';
 
 // Default models per provider
 export const CEREBRAS_MODEL = 'gpt-oss-120b';
-export const GROQ_MODEL_DEFAULT = 'openai/gpt-oss-20b';
+export const GROQ_MODEL_DEFAULT = 'openai/gpt-oss-120b';
 
 export type RouteResult = { type: ReqType; payload: string; raw: string; selectionMode?: boolean };
 
@@ -373,7 +373,6 @@ function buildKeytermsFinal(basePool: string[]): string[] {
 export class Model {
   private cerebras: Cerebras | null = null;
   private groqApiKey: string = '';
-  private groqModel: string = GROQ_MODEL_DEFAULT;
   private deepgramApiKey: string = '';
   private baseKeyterms: string[] = [];
   private provider: LlmProvider = 'cerebras';
@@ -402,11 +401,6 @@ export class Model {
   public setGroqApiKey(apiKey: string) {
     console.log('[Mantra] Setting Groq API key:', apiKey ? `${apiKey.slice(0, 8)}...${apiKey.slice(-4)}` : '(empty)');
     this.groqApiKey = apiKey;
-  }
-
-  public setGroqModel(model: string) {
-    this.groqModel = model || GROQ_MODEL_DEFAULT;
-    console.log(`[Mantra] Groq model set to: ${this.groqModel}`);
   }
 
   public hasLlm(): boolean {
@@ -476,7 +470,7 @@ export class Model {
       e.provider = 'groq';
       throw e;
     }
-    const modelId = req.model || this.groqModel;
+    const modelId = req.model || GROQ_MODEL_DEFAULT;
     console.log(`[Mantra] Groq request: model=${modelId}, key=${this.groqApiKey.slice(0, 8)}...${this.groqApiKey.slice(-4)}`);
     try {
       const startTime = Date.now();
@@ -750,10 +744,7 @@ export class Model {
     const cfg = vscode.workspace.getConfiguration('mantra');
     const selectionPrompt = (cfg.get<string>('selectionPrompt') ?? '').trim();
 
-    // Use the configured selection model (falls back to default)
-    const selModel = this.provider === 'groq'
-      ? (cfg.get<string>('groqSelectionModel') || GROQ_MODEL_DEFAULT)
-      : CEREBRAS_MODEL;
+    const selModel = this.provider === 'groq' ? GROQ_MODEL_DEFAULT : CEREBRAS_MODEL;
 
     try {
       const raw = await this.chatText({
@@ -963,7 +954,7 @@ export class Model {
 
     const user = parts.join('\n');
 
-    const activeModel = this.provider === 'groq' ? this.groqModel : CEREBRAS_MODEL;
+    const activeModel = this.provider === 'groq' ? GROQ_MODEL_DEFAULT : CEREBRAS_MODEL;
     console.log('LLM prompt ready.')
     const raw = await this.chatText({
       model: activeModel,
@@ -1005,7 +996,7 @@ export class Model {
    */
   async updateMemory(utterance: string, result: RouteResult, terminalHistory?: string): Promise<void> {
     try {
-      const activeModel = this.provider === 'groq' ? this.groqModel : CEREBRAS_MODEL;
+      const activeModel = this.provider === 'groq' ? GROQ_MODEL_DEFAULT : CEREBRAS_MODEL;
       const raw = await this.chatText({
         model: activeModel,
         temperature: 0,
