@@ -168,17 +168,23 @@ async function ensureClaudeTerminal(): Promise<vscode.Terminal | null> {
  * Send a prompt to Claude Code terminal and ensure it executes.
  */
 export async function sendToClaudePanel(prompt: string): Promise<void> {
+  const wasReady = _claudeTerminalReady;
   const terminal = await ensureClaudeTerminal();
   if (!terminal) {
     vscode.window.showWarningMessage('Could not open Claude Code terminal.');
     return;
   }
 
-  terminal.show(true);
-
   if (!_claudeTerminalReady) {
+    terminal.show(true);
     await waitForCommandStart(terminal, 8000);
     _claudeTerminalReady = true;
+  }
+
+  // Extra settle time when the terminal was just opened — Claude's CLI
+  // needs a moment after initialization before its input handler is ready.
+  if (!wasReady) {
+    await sleep(1500);
   }
 
   terminal.sendText(prompt, false); // type without pressing Enter
