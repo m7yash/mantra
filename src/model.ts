@@ -349,6 +349,7 @@ export class Model {
   private deepgramApiKey: string = '';
   private baseKeyterms: string[] = [];
   private provider: LlmProvider = 'cerebras';
+  private memory: string = '';
 
   constructor(apiKey: string, deepgramApiKey?: string) {
     if (apiKey) {
@@ -537,8 +538,15 @@ export class Model {
       ]);
       const isNoiseWord = (txt: string): boolean => {
         if (!txt || !txt.trim()) return true;  // empty = noise
-        const words = txt.trim().split(/\s+/);
-        return words.length === 1 && NOISE_WORDS.has(words[0].toLowerCase());
+        // Strip punctuation before checking (Flux may return "Two." or "Four,")
+        const clean = txt.trim().replace(/[^a-zA-Z0-9\s]/g, '').trim().toLowerCase();
+        if (!clean) return true;
+        const words = clean.split(/\s+/);
+        // Single noise word
+        if (words.length === 1 && NOISE_WORDS.has(words[0])) return true;
+        // Two noise words (e.g. "oh two", "uh huh")
+        if (words.length === 2 && NOISE_WORDS.has(words[0]) && NOISE_WORDS.has(words[1])) return true;
+        return false;
       };
 
       const safeResolve = (txt: string) => {
@@ -665,7 +673,13 @@ export class Model {
 
   async decide(
     utterance: string,
-    ctx: { editorContext: string; commands: string[]; filename?: string; editor?: vscode.TextEditor }
+    ctx: {
+      editorContext: string;
+      commands: string[];
+      filename?: string;
+      editor?: vscode.TextEditor;
+      terminalHistory?: string;
+    }
   ): Promise<RouteResult> {
     console.log('Entering decide function')
 
@@ -734,6 +748,14 @@ export class Model {
       commandList || '- (none provided)'
     ].join('\n');
     const parts: string[] = [];
+
+    // Include conversation memory if available
+    if (this.memory) {
+      parts.push('Conversation memory (context from earlier in this session):');
+      parts.push(this.memory);
+      parts.push('');
+    }
+
     parts.push('User utterance:');
     parts.push(utterance.trim());
     parts.push('');
@@ -743,6 +765,14 @@ export class Model {
     parts.push('');
     parts.push(symbolCtxStr);
     parts.push('');
+
+    // Include terminal history if available
+    if (ctx.terminalHistory) {
+      parts.push('Terminal history (recent commands and output):');
+      parts.push(ctx.terminalHistory);
+      parts.push('');
+    }
+
     parts.push(fullFileStr);
     const user = parts.join('\n');
 
@@ -763,4 +793,65 @@ export class Model {
     }
     return parsed;
   }
+
+  /**
+   * After a decide() call, update the running conversation memory.
+   * Sends the current memory + latest interaction to the LLM and stores the updated summary.
+   * This runs in the background and does not block the main flow.
+   */
+  async updateMemory(utterance: string, result: RouteResult, terminalHistory?: string): Promise<void> {
+    try {
+      const activeModel = this.provider === 'groq' ? this.groqModel : CEREBRAS_MODEL;
+      const raw = await this.chatText({
+        model: activeModel,
+        temperature: 0,
+        messages: [
+          {
+            role: 'system',
+            content: [
+              'You are a memory manager for a voice-controlled code editor session.',
+              'You maintain a thorough running summary of everything that has happened so far.',
+              'Given the current memory and the latest interaction, produce an UPDATED memory.',
+              '',
+              'Your memory should be written so that a future LLM reading it has full context to help the user. Include:',
+              '- What project/files the user is working on and their current goals',
+              '- Key decisions, code changes, and modifications made (with filenames and what changed)',
+              '- Terminal commands run and their outcomes (successes, errors, what was installed/configured)',
+              '- Questions the user asked and the answers they received — especially if the answer informs future work',
+              '- User preferences, corrections, or patterns (e.g. "user prefers python3", "user uses Claude for refactoring")',
+              '- Current state: what the user was last doing, any unresolved issues or next steps',
+              '',
+              'Rules:',
+              '- Be thorough but not verbose. Prioritize information that would be useful for the NEXT interaction.',
+              '- Merge new info into existing context rather than appending a changelog.',
+              '- Drop details that are fully superseded (e.g. old errors that were fixed).',
+              '- Max ~500 words.',
+              '- Output ONLY the updated memory text. No labels, no explanation.',
+            ].join('\n'),
+          },
+          {
+            role: 'user',
+            content: [
+              'Current memory:',
+              this.memory || '(empty — this is the first interaction)',
+              '',
+              'Latest interaction:',
+              `User said: "${utterance}"`,
+              `Action taken: ${result.type}`,
+              `Result: ${result.payload.length > 1000 ? result.payload.slice(0, 1000) + '...' : result.payload}`,
+              '',
+              terminalHistory ? `Recent terminal activity:\n${terminalHistory}` : '',
+            ].filter(Boolean).join('\n'),
+          },
+        ],
+      });
+      this.memory = (raw || '').trim();
+      console.log(`[Mantra] Memory updated (${this.memory.length} chars)`);
+    } catch (err) {
+      console.warn('[Mantra] Memory update failed (non-fatal):', err);
+    }
+  }
+
+  /** Get the current conversation memory. */
+  getMemory(): string { return this.memory; }
 }

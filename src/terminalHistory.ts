@@ -7,16 +7,16 @@ export interface TerminalEntry {
   timestamp: number;
 }
 
-let lastEntry: TerminalEntry | null = null;
+const history: TerminalEntry[] = [];
+const MAX_ENTRIES = 50;
 const pendingOutputs = new Map<vscode.TerminalShellExecution, Promise<string>>();
 
 /**
  * Start tracking terminal command executions via VS Code shell integration.
- * Captures the last command + output so it can be forwarded to Claude.
+ * Captures all commands + output for the session.
  */
 export function initTerminalHistory(): vscode.Disposable[] {
   const d1 = vscode.window.onDidStartTerminalShellExecution((e) => {
-    // Start reading output immediately — the async iterable completes when the command finishes
     const outputPromise = (async () => {
       let output = '';
       try {
@@ -37,13 +37,15 @@ export function initTerminalHistory(): vscode.Disposable[] {
     pendingOutputs.delete(e.execution);
     const output = outputPromise ? await outputPromise : '';
 
-    lastEntry = {
+    const entry: TerminalEntry = {
       command: e.execution.commandLine.value,
       output: output.trim(),
       exitCode: e.exitCode,
       timestamp: Date.now(),
     };
-    console.log(`[Mantra] Terminal command finished: "${lastEntry.command}" (exit: ${lastEntry.exitCode ?? '?'})`);
+    history.push(entry);
+    if (history.length > MAX_ENTRIES) history.shift();
+    console.log(`[Mantra] Terminal command finished: "${entry.command}" (exit: ${entry.exitCode ?? '?'})`);
   });
 
   return [d1, d2];
@@ -51,12 +53,47 @@ export function initTerminalHistory(): vscode.Disposable[] {
 
 /**
  * Get the last terminal command + output, if recent enough.
- * Returns null if there's no history or it's older than maxAgeMs (default 5 minutes).
  */
 export function getLastTerminalOutput(maxAgeMs = 5 * 60 * 1000): TerminalEntry | null {
-  if (!lastEntry) return null;
-  if (Date.now() - lastEntry.timestamp > maxAgeMs) return null;
-  return lastEntry;
+  if (history.length === 0) return null;
+  const last = history[history.length - 1];
+  if (Date.now() - last.timestamp > maxAgeMs) return null;
+  return last;
+}
+
+/**
+ * Get the full terminal history for the session.
+ * Returns entries formatted as a string, capped to maxChars to keep prompts manageable.
+ */
+export function getFullTerminalHistory(maxChars = 8000): string {
+  if (history.length === 0) return '';
+
+  const parts: string[] = [];
+  // Build from newest to oldest, then reverse, so we keep the most recent if we hit the cap
+  for (let i = history.length - 1; i >= 0; i--) {
+    const e = history[i];
+    const lines: string[] = [];
+    lines.push(`$ ${e.command}`);
+    if (e.exitCode !== undefined && e.exitCode !== 0) {
+      lines.push(`[exit code: ${e.exitCode}]`);
+    }
+    if (e.output) {
+      // Cap individual entry output
+      const out = e.output.length > 2000
+        ? e.output.slice(0, 500) + '\n...(truncated)...\n' + e.output.slice(-1000)
+        : e.output;
+      lines.push(out);
+    }
+    const block = lines.join('\n');
+
+    // Check if adding this block would exceed the cap
+    const currentLen = parts.reduce((s, p) => s + p.length + 1, 0);
+    if (currentLen + block.length > maxChars && parts.length > 0) break;
+    parts.push(block);
+  }
+
+  parts.reverse();
+  return parts.join('\n\n');
 }
 
 /**

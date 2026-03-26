@@ -4,8 +4,14 @@ import { Model } from './model';
 import { canonicalCommandPhrases, tryExecuteMappedCommand } from './commands';
 import { handleCommand as handleTextCommand } from './textOps';
 import { typeInTerminal, executeInTerminal, executeLastTyped } from './terminal';
-import { sendToClaudePanel, focusClaudePanel, acceptClaudeChanges, rejectClaudeChanges, newClaudeConversation } from './claude';
-import { initTerminalHistory, getLastTerminalOutput, formatTerminalContext } from './terminalHistory';
+import {
+  sendToClaudePanel, sendDirectToClaude, respondToClaude,
+  focusClaudePanel, acceptClaudeChanges, rejectClaudeChanges,
+  isClaudeMode, setClaudeMode, isClaudeTerminalActive,
+  claudeResume, claudeNewConversation, claudeSetModel,
+  claudeHelp, claudeStatus, claudeCompact, claudeUndo, claudeInterrupt,
+} from './claude';
+import { initTerminalHistory, getLastTerminalOutput, getFullTerminalHistory, formatTerminalContext } from './terminalHistory';
 import ffmpegStatic from 'ffmpeg-static';
 import { spawnSync } from 'child_process';
 
@@ -18,15 +24,27 @@ let outputChannel: vscode.OutputChannel | null = null;
 // Track explicit pause state separate from recorder process state
 let __mantraPaused = false;
 
-/** If the prompt references terminal output/errors, attach last terminal context. */
+/** If the prompt references terminal output/errors, save terminal history to a temp file and reference it. */
 const TERMINAL_CONTEXT_RE = /\b(error|fix|debug|wrong|fail|broke|broken|crash|issue|bug|output|terminal|what happened|went wrong|doesn't work|not working|won't run)\b/i;
 
 function buildClaudePrompt(prompt: string): string {
-  const entry = getLastTerminalOutput();
-  if (!entry) return prompt;
-  // Include terminal context if prompt references errors/output OR last command failed
-  if (TERMINAL_CONTEXT_RE.test(prompt) || (entry.exitCode !== undefined && entry.exitCode !== 0)) {
-    return prompt + '\n\n' + formatTerminalContext(entry);
+  const history = getFullTerminalHistory();
+  if (!history) return prompt;
+  const lastEntry = getLastTerminalOutput();
+  // Include terminal reference if prompt references errors/output OR last command failed
+  if (TERMINAL_CONTEXT_RE.test(prompt) || (lastEntry && lastEntry.exitCode !== undefined && lastEntry.exitCode !== 0)) {
+    try {
+      const fs = require('fs');
+      const os = require('os');
+      const path = require('path');
+      const tmpFile = path.join(os.tmpdir(), 'mantra-terminal-history.txt');
+      fs.writeFileSync(tmpFile, history, 'utf8');
+      return prompt + `\n\nSee terminal history at: ${tmpFile}`;
+    } catch {
+      // If file write fails, just mention the terminal context briefly
+      const last = lastEntry;
+      return prompt + (last ? `\n\nLast command: ${last.command}` + (last.exitCode ? ` (exit ${last.exitCode})` : '') : '');
+    }
   }
   return prompt;
 }
@@ -710,6 +728,13 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 
           if (!transcript) return;
 
+          // Secondary noise filter — catch anything the STT noise gate missed
+          const NOISE_RE = /^(two|to|too|four|for|ate|eight|one|won|the|a|an|uh|um|oh|ah|hmm|huh|it|is|i|so|but|yeah|yep|nah|hey|hi|bye|ok|hm|mm)\.?$/i;
+          if (NOISE_RE.test(transcript.trim())) {
+            console.log('[Mantra] Secondary noise filter caught:', transcript);
+            return;
+          }
+
           console.log('[Mantra] Transcript: ', transcript);
 
           // --- PAUSE/RESUME interception (pre-LLM) ---
@@ -730,24 +755,85 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
             return;
           }
 
-          // --- claude shortcut (pre-LLM) ---
-          const claudeMatch = t.match(/^(?:ask claude|tell claude|hey claude|claude)\s+(.+)$/i);
-          if (claudeMatch) {
-            await sendToClaudePanel(buildClaudePrompt(claudeMatch[1]));
-            return;
+          // --- Auto-detect Claude mode from active terminal ---
+          if (!isClaudeMode() && isClaudeTerminalActive()) {
+            setClaudeMode(true);
           }
 
-          // --- claude panel actions (pre-LLM) ---
-          if (/^(accept|accept changes|accept claude changes)$/i.test(t)) {
+          // --- Claude diff actions (always available) ---
+          if (/^(accept|accept changes|accept claude changes|accept diff)$/i.test(t)) {
             await acceptClaudeChanges();
             return;
           }
-          if (/^(reject|reject changes|reject claude changes)$/i.test(t)) {
+          if (/^(reject|reject changes|reject claude changes|reject diff)$/i.test(t)) {
             await rejectClaudeChanges();
             return;
           }
-          if (/^(new conversation|new claude conversation|new chat)$/i.test(t)) {
-            await newClaudeConversation();
+
+          // --- Claude CLI commands (always available) ---
+          if (/^(new conversation|new claude conversation|new chat|clear conversation|clear chat|start over|start fresh)$/i.test(t)) {
+            await claudeNewConversation();
+            return;
+          }
+          if (/^(resume|resume conversation|resume chat|continue conversation|continue chat|pick up where we left off)$/i.test(t)) {
+            await claudeResume();
+            return;
+          }
+          if (/^(claude help|show help|help claude|what can you do)$/i.test(t)) {
+            await claudeHelp();
+            return;
+          }
+          if (/^(claude status|show status|status)$/i.test(t) && isClaudeMode()) {
+            await claudeStatus();
+            return;
+          }
+          if (/^(compact|compact conversation|summarize conversation|compact chat)$/i.test(t) && isClaudeMode()) {
+            await claudeCompact();
+            return;
+          }
+          if (/^(undo|undo that|undo last|undo claude)$/i.test(t) && isClaudeMode()) {
+            await claudeUndo();
+            return;
+          }
+          if (/^(stop|cancel|interrupt|stop claude|cancel claude|nevermind|never mind)$/i.test(t) && isClaudeMode()) {
+            claudeInterrupt();
+            return;
+          }
+          // "set model to X" / "use sonnet" / "switch to opus" etc.
+          {
+            const modelMatch = t.match(/^(?:set model(?: to)?|use model|use|switch to|change model(?: to)?)[\s]+(sonnet|opus|haiku|claude[\s-]?3[\s.-]?5[\s-]?sonnet|claude[\s-]?3[\s.-]?5[\s-]?haiku|claude[\s-]?3[\s.-]?5[\s-]?opus)$/i);
+            if (modelMatch) {
+              await claudeSetModel(modelMatch[1].trim());
+              return;
+            }
+          }
+
+          // --- Claude permission prompts (yes/no/allow/deny) ---
+          if (isClaudeMode()) {
+            const yesMatch = /^(yes|yeah|yep|yup|sure|allow|confirm|approve|go ahead|do it|proceed)$/i.test(t);
+            const yesSessionMatch = /^(yes for session|allow for session|always allow|allow all|yes always|trust)$/i.test(t);
+            const noMatch = /^(no|nope|deny|decline|reject this|don'?t allow|skip|pass)$/i.test(t);
+            if (yesMatch) { respondToClaude('y'); return; }
+            if (yesSessionMatch) { respondToClaude('Y'); return; }
+            if (noMatch) { respondToClaude('n'); return; }
+          }
+
+          // --- exit Claude mode ---
+          if (isClaudeMode() && /^(focus editor|go to editor|go to code|switch to editor|focus terminal|go to terminal|switch to terminal|focus sidebar|go to sidebar|exit claude|leave claude|stop claude mode)$/i.test(t)) {
+            setClaudeMode(false);
+            // Fall through to normal command routing
+          }
+
+          // --- Claude passthrough mode ---
+          // When Claude mode is active, send all voice directly to Claude terminal.
+          if (isClaudeMode() && !/^(focus |go to |switch to |exit |leave |stop )/.test(t)) {
+            await sendDirectToClaude(transcript);
+            return;
+          }
+
+          // --- enter Claude mode explicitly ---
+          if (/^(focus claude|switch to claude|go to claude|open claude|claude mode|talk to claude)$/i.test(t)) {
+            await focusClaudePanel();
             return;
           }
 
@@ -783,6 +869,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
           const commandsList = canonicalCommandPhrases();
 
           // --- decide + apply result ---
+          const termHistory = getFullTerminalHistory();
           let result: any;
           try {
             result = await model!.decide(transcript, {
@@ -790,6 +877,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
               commands: commandsList,
               filename: editor?.document.fileName,
               editor: editor || undefined,
+              terminalHistory: termHistory || undefined,
             });
           } catch (err: any) {
             const status = (err && (err.status || err.code)) ?? 0;
@@ -851,6 +939,11 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
             } else {
               vscode.window.showInformationMessage(answer || '(no answer)');
             }
+          }
+
+          // Update conversation memory in the background (non-blocking)
+          if (model && result) {
+            model.updateMemory(transcript, result, termHistory || undefined).catch(() => {});
           }
         });
       } catch (err: any) {
