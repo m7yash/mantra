@@ -22,6 +22,39 @@ vscode.window.onDidChangeActiveTextEditor((editor) => {
 });
 
 // ──────────────────────────────────────────────
+//  Terminal readiness detection
+// ──────────────────────────────────────────────
+
+/**
+ * Wait until a terminal's shell integration activates or falls back to timeout.
+ */
+function waitForShellReady(terminal: vscode.Terminal, fallbackMs = 6000): Promise<void> {
+  return new Promise<void>((resolve) => {
+    if (terminal.shellIntegration) { resolve(); return; }
+    let done = false;
+    const finish = () => { if (done) return; done = true; disposable.dispose(); clearTimeout(timer); resolve(); };
+    const disposable = vscode.window.onDidChangeTerminalShellIntegration((e) => {
+      if (e.terminal === terminal) { console.log('[Mantra] Claude shell integration activated'); finish(); }
+    });
+    const timer = setTimeout(() => { console.log('[Mantra] Claude shell integration timeout — fallback'); finish(); }, fallbackMs);
+  });
+}
+
+/**
+ * Wait until a command starts executing in a terminal or falls back to timeout.
+ */
+function waitForCommandStart(terminal: vscode.Terminal, fallbackMs = 6000): Promise<void> {
+  return new Promise<void>((resolve) => {
+    let done = false;
+    const finish = () => { if (done) return; done = true; disposable.dispose(); clearTimeout(timer); resolve(); };
+    const disposable = vscode.window.onDidStartTerminalShellExecution((e) => {
+      if (e.terminal === terminal) { console.log('[Mantra] Claude CLI started executing'); finish(); }
+    });
+    const timer = setTimeout(() => { console.log('[Mantra] Claude command start timeout — fallback'); finish(); }, fallbackMs);
+  });
+}
+
+// ──────────────────────────────────────────────
 //  Claude terminal management
 // ──────────────────────────────────────────────
 
@@ -95,12 +128,14 @@ async function ensureClaudeTerminal(): Promise<vscode.Terminal | null> {
       _claudeTerminalReady = false;
       console.log(`[Mantra] Claude terminal created: "${newTerminal.name}"`);
 
-      // Give Claude CLI time to fully initialize (welcome screen, load config).
-      // claude-vscode.terminal.open creates a shell then runs `claude` in it —
-      // sending text too early goes to the shell, not Claude.
+      // Wait for the CLI to actually start executing.
+      // Shell integration fires onDidStartTerminalShellExecution when the
+      // `claude` process launches, so we know it's accepting input.
+      // Falls back to a conservative timeout if shell integration isn't active.
       console.log('[Mantra] Waiting for Claude CLI to initialize...');
-      vscode.window.setStatusBarMessage('Starting Claude...', 8000);
-      await sleep(7000);
+      vscode.window.setStatusBarMessage('Starting Claude...', 12000);
+      await waitForCommandStart(newTerminal, 10000);
+      await sleep(500); // brief settle for the CLI to render its UI
       _claudeTerminalReady = true;
       console.log('[Mantra] Claude terminal ready');
       return _claudeTerminal;
@@ -141,9 +176,8 @@ export async function sendToClaudePanel(prompt: string): Promise<void> {
 
   terminal.show(true);
 
-  // If terminal was just created, it needs extra time to be ready
   if (!_claudeTerminalReady) {
-    await sleep(2000);
+    await waitForCommandStart(terminal, 8000);
     _claudeTerminalReady = true;
   }
 
@@ -229,7 +263,7 @@ async function sendClaudeCommand(cmd: string): Promise<void> {
   }
   terminal.show(true);
   if (!_claudeTerminalReady) {
-    await sleep(2000);
+    await waitForCommandStart(terminal, 8000);
     _claudeTerminalReady = true;
   }
   terminal.sendText(cmd, true);
@@ -322,6 +356,19 @@ export async function rejectClaudeChanges(): Promise<void> {
     vscode.window.setStatusBarMessage('Rejected Claude changes', 1500);
   } catch {
     respondToClaude('n');
+  }
+}
+
+/**
+ * Close the Claude terminal if it exists.
+ */
+export function closeClaudeTerminal(): void {
+  if (_claudeTerminal) {
+    _claudeTerminal.dispose();
+    _claudeTerminal = null;
+    _claudeTerminalReady = false;
+    if (_claudeMode) setClaudeMode(false);
+    console.log('[Mantra] Claude terminal closed by request');
   }
 }
 

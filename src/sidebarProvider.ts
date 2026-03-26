@@ -2,7 +2,7 @@ import * as vscode from 'vscode';
 
 export interface LogEntry {
   time: string;           // HH:MM:SS
-  kind: 'transcript' | 'command' | 'modification' | 'terminal' | 'question' | 'claude' | 'error' | 'info';
+  kind: 'transcript' | 'command' | 'modification' | 'terminal' | 'question' | 'claude' | 'codex' | 'error' | 'info';
   text: string;           // main text
   diff?: string;          // unified diff for modifications
 }
@@ -17,6 +17,11 @@ export interface SidebarState {
   testing?: boolean;      // mic test mode
   routerPrompt?: string;  // main LLM system prompt
   memoryPrompt?: string;  // memory manager system prompt
+  agentBackend?: string;  // 'claude' | 'codex'
+  agentInstalled?: boolean; // whether selected agent CLI is installed
+  llmProvider?: string;   // 'groq' | 'cerebras'
+  llmModel?: string;      // active model id
+  commandsOnly?: boolean; // commands-only mode toggle
 }
 
 export class MantraSidebarProvider implements vscode.WebviewViewProvider {
@@ -26,6 +31,10 @@ export class MantraSidebarProvider implements vscode.WebviewViewProvider {
   private _logs: LogEntry[] = [];
   private _onMemoryEdit?: (text: string) => void;
   private _onPromptEdit?: (key: string, text: string) => void;
+  private _onAgentChange?: (agent: string) => void;
+  private _onProviderChange?: (provider: string) => void;
+  private _onModelChange?: (model: string) => void;
+  private _onInstallAgent?: () => void;
 
   constructor(private readonly _extensionUri: vscode.Uri) {}
 
@@ -37,6 +46,26 @@ export class MantraSidebarProvider implements vscode.WebviewViewProvider {
   /** Register a callback for when the user edits a prompt in the sidebar. */
   public onPromptEdit(cb: (key: string, text: string) => void): void {
     this._onPromptEdit = cb;
+  }
+
+  /** Register a callback for when the user changes the agent backend. */
+  public onAgentChange(cb: (agent: string) => void): void {
+    this._onAgentChange = cb;
+  }
+
+  /** Register a callback for when the user changes the LLM provider. */
+  public onProviderChange(cb: (provider: string) => void): void {
+    this._onProviderChange = cb;
+  }
+
+  /** Register a callback for when the user changes the LLM model. */
+  public onModelChange(cb: (model: string) => void): void {
+    this._onModelChange = cb;
+  }
+
+  /** Register a callback for when the user clicks the install button. */
+  public onInstallAgent(cb: () => void): void {
+    this._onInstallAgent = cb;
   }
 
   /** Push live state to the webview. Caches so the sidebar can restore on re-open. */
@@ -78,6 +107,22 @@ export class MantraSidebarProvider implements vscode.WebviewViewProvider {
         if (this._onMemoryEdit && typeof msg.text === 'string') {
           this._onMemoryEdit(msg.text);
         }
+      } else if (msg.type === 'agentChange') {
+        if (this._onAgentChange && typeof msg.agent === 'string') {
+          this._onAgentChange(msg.agent);
+        }
+      } else if (msg.type === 'providerChange') {
+        if (this._onProviderChange && typeof msg.provider === 'string') {
+          this._onProviderChange(msg.provider);
+        }
+      } else if (msg.type === 'modelChange') {
+        if (this._onModelChange && typeof msg.model === 'string') {
+          this._onModelChange(msg.model);
+        }
+      } else if (msg.type === 'installAgent') {
+        if (this._onInstallAgent) {
+          this._onInstallAgent();
+        }
       } else if (msg.type === 'ready') {
         // Webview loaded — push cached state so it's populated immediately
         if (Object.keys(this._cachedState).length > 0) {
@@ -104,6 +149,46 @@ export class MantraSidebarProvider implements vscode.WebviewViewProvider {
     font-size: var(--vscode-font-size);
     color: var(--vscode-foreground);
     padding: 12px 10px 20px;
+  }
+
+  /* ── Dropdown ── */
+  .dropdown {
+    width: 100%;
+    padding: 5px 8px;
+    border: 1px solid var(--vscode-input-border, rgba(128,128,128,0.25));
+    border-radius: 4px;
+    background: var(--vscode-input-background);
+    color: var(--vscode-foreground);
+    font-family: var(--vscode-font-family);
+    font-size: var(--vscode-font-size);
+    outline: none;
+    margin: 4px 0;
+    cursor: pointer;
+  }
+  .dropdown:focus {
+    border-color: var(--vscode-focusBorder);
+  }
+  .install-wrap {
+    padding: 4px 0 6px;
+  }
+  .install-msg {
+    font-size: 11px;
+    color: var(--vscode-editorWarning-foreground, #cca700);
+    padding: 2px 0 4px;
+  }
+  .install-btn {
+    width: 100%;
+    padding: 6px 10px;
+    border: 1px solid var(--vscode-widget-border, rgba(128,128,128,0.25));
+    border-radius: 4px;
+    background: var(--vscode-button-secondaryBackground, rgba(128,128,128,0.2));
+    color: var(--vscode-button-secondaryForeground, var(--vscode-foreground));
+    font-family: var(--vscode-font-family);
+    font-size: 12px;
+    cursor: pointer;
+  }
+  .install-btn:hover {
+    background: var(--vscode-button-secondaryHoverBackground, rgba(128,128,128,0.3));
   }
 
   /* ── Toggle button ── */
@@ -421,9 +506,9 @@ export class MantraSidebarProvider implements vscode.WebviewViewProvider {
     <span class="row-icon">&#9002;</span>
     <span class="row-label">Terminal</span>
   </button>
-  <button class="row" data-cmd="mantra.focusClaude">
+  <button class="row" data-cmd="mantra.focusAgent">
     <span class="row-icon">&#9671;</span>
-    <span class="row-label">Claude</span>
+    <span class="row-label" id="focusAgentLabel">Agent</span>
   </button>
   <button class="row" data-cmd="workbench.view.explorer">
     <span class="row-icon">&#128193;</span>
@@ -442,14 +527,42 @@ export class MantraSidebarProvider implements vscode.WebviewViewProvider {
 
   <!-- Settings -->
   <div class="section-label">Settings</div>
+
+  <div style="padding:2px 0;">
+    <div style="font-size:11px;color:var(--vscode-descriptionForeground);padding:2px 0;">Agent</div>
+    <select id="agentSelect" class="dropdown">
+      <option value="claude">Claude Code</option>
+      <option value="codex">Codex CLI</option>
+    </select>
+    <div id="installWrap" class="install-wrap" style="display:none;">
+      <div class="install-msg" id="installMsg">Agent CLI is not installed.</div>
+      <button class="install-btn" id="installBtn">Install via npm</button>
+    </div>
+  </div>
+  <div style="padding:2px 0;">
+    <div style="font-size:11px;color:var(--vscode-descriptionForeground);padding:2px 0;">LLM Provider</div>
+    <select id="providerSelect" class="dropdown">
+      <option value="groq">Groq</option>
+      <option value="cerebras">Cerebras</option>
+    </select>
+  </div>
+  <div style="padding:2px 0;">
+    <div style="font-size:11px;color:var(--vscode-descriptionForeground);padding:2px 0;">Model</div>
+    <select id="modelSelect" class="dropdown">
+      <option value="openai/gpt-oss-20b">GPT-OSS 20B (fast)</option>
+      <option value="openai/gpt-oss-120b">GPT-OSS 120B (capable)</option>
+    </select>
+  </div>
+
   <button class="row" data-cmd="mantra.selectMicrophone">
     <span class="row-icon">&#127908;</span>
     <span class="row-label">Microphone</span>
     <span class="row-hint">Ctrl+Shift+4</span>
   </button>
-  <button class="row" data-cmd="mantra.toggleCommandsOnly">
+  <button class="row" data-cmd="mantra.toggleCommandsOnly" id="cmdOnlyBtn">
     <span class="row-icon">&#8644;</span>
-    <span class="row-label">Commands-Only Mode</span>
+    <span class="row-label" id="cmdOnlyLabel">Commands-Only Mode</span>
+    <span class="row-hint" id="cmdOnlyHint">OFF</span>
   </button>
   <button class="row" data-cmd="mantra.openSettings">
     <span class="row-icon">&#9881;</span>
@@ -516,6 +629,14 @@ export class MantraSidebarProvider implements vscode.WebviewViewProvider {
     const memoryPromptEl = document.getElementById('memoryPrompt');
     const logWrap = document.getElementById('logWrap');
     const logEmpty = document.getElementById('logEmpty');
+    const agentSelect = document.getElementById('agentSelect');
+    const installWrap = document.getElementById('installWrap');
+    const installMsg = document.getElementById('installMsg');
+    const installBtn = document.getElementById('installBtn');
+    const providerSelect = document.getElementById('providerSelect');
+    const modelSelect = document.getElementById('modelSelect');
+    const focusAgentLabel = document.getElementById('focusAgentLabel');
+    const cmdOnlyHint = document.getElementById('cmdOnlyHint');
 
     toggleBtn.addEventListener('click', () => {
       if (listening) {
@@ -538,6 +659,38 @@ export class MantraSidebarProvider implements vscode.WebviewViewProvider {
     document.getElementById('keybindingsBtn').addEventListener('click', () => {
       vscode.postMessage({ type: 'openKeybindings' });
     });
+
+    // Agent backend dropdown
+    agentSelect.addEventListener('change', () => {
+      vscode.postMessage({ type: 'agentChange', agent: agentSelect.value });
+    });
+
+    // Install button
+    installBtn.addEventListener('click', () => {
+      vscode.postMessage({ type: 'installAgent' });
+    });
+
+    // LLM Provider dropdown
+    providerSelect.addEventListener('change', () => {
+      vscode.postMessage({ type: 'providerChange', provider: providerSelect.value });
+      // Update model options based on provider
+      updateModelOptions(providerSelect.value);
+    });
+
+    // Model dropdown
+    modelSelect.addEventListener('change', () => {
+      vscode.postMessage({ type: 'modelChange', model: modelSelect.value });
+    });
+
+    function updateModelOptions(provider) {
+      modelSelect.innerHTML = '';
+      if (provider === 'groq') {
+        modelSelect.innerHTML = '<option value="openai/gpt-oss-20b">GPT-OSS 20B (fast)</option>'
+          + '<option value="openai/gpt-oss-120b">GPT-OSS 120B (capable)</option>';
+      } else {
+        modelSelect.innerHTML = '<option value="gpt-oss-120b">GPT-OSS 120B</option>';
+      }
+    }
 
     function escHtml(s) { const d = document.createElement('div'); d.textContent = s; return d.innerHTML; }
 
@@ -610,6 +763,38 @@ export class MantraSidebarProvider implements vscode.WebviewViewProvider {
 
       if (msg.memoryPrompt !== undefined) {
         memoryPromptEl.value = msg.memoryPrompt;
+      }
+
+      if (msg.agentBackend !== undefined) {
+        agentSelect.value = msg.agentBackend;
+        const label = msg.agentBackend === 'codex' ? 'Codex' : 'Claude';
+        focusAgentLabel.textContent = label;
+      }
+
+      if (msg.agentInstalled !== undefined) {
+        if (msg.agentInstalled) {
+          installWrap.style.display = 'none';
+        } else {
+          const name = agentSelect.value === 'codex' ? 'Codex CLI' : 'Claude Code CLI';
+          installMsg.textContent = name + ' is not installed.';
+          installWrap.style.display = '';
+        }
+      }
+
+      if (msg.llmProvider !== undefined) {
+        providerSelect.value = msg.llmProvider;
+        updateModelOptions(msg.llmProvider);
+      }
+
+      if (msg.llmModel !== undefined) {
+        modelSelect.value = msg.llmModel;
+      }
+
+      if (msg.commandsOnly !== undefined) {
+        cmdOnlyHint.textContent = msg.commandsOnly ? 'ON' : 'OFF';
+        cmdOnlyHint.style.color = msg.commandsOnly
+          ? 'var(--vscode-charts-green, #89d185)'
+          : 'var(--vscode-descriptionForeground)';
       }
 
       if (msg.testing !== undefined) {

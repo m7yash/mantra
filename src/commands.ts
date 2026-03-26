@@ -121,7 +121,7 @@ const SPECS: CommandSpec[] = [
   { id: 'workbench.action.terminal.new', name: 'new terminal', category: 'terminal' },
   { id: 'workbench.action.terminal.focusNext', name: 'next terminal', category: 'terminal' },
   { id: 'workbench.action.terminal.focusPrevious', name: 'previous terminal', category: 'terminal' },
-  { id: 'mantra.focusClaude', name: 'focus claude', aliases: ['switch to claude', 'go to claude', 'open claude'], category: 'terminal' },
+  { id: 'mantra.focusAgent', name: 'focus agent', aliases: ['switch to agent', 'go to agent', 'open agent', 'focus claude', 'switch to claude', 'go to claude', 'open claude', 'focus codex', 'switch to codex', 'go to codex', 'open codex', 'focus llm', 'open llm', 'ask agent', 'ask llm'], category: 'terminal' },
   { id: 'claude-vscode.newConversation', name: 'new conversation', aliases: ['new claude conversation', 'new chat'], category: 'terminal' },
   { id: 'claude-vscode.acceptProposedDiff', name: 'accept changes', aliases: ['accept claude changes', 'accept'], category: 'terminal' },
   { id: 'claude-vscode.rejectProposedDiff', name: 'reject changes', aliases: ['reject claude changes', 'reject'], category: 'terminal' },

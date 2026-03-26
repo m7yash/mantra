@@ -8,7 +8,8 @@ const norm = (s: string) =>
     .toLowerCase()
     .replace(/[^\w\s\-./\\]/g, ' ')
     .replace(/\s+/g, ' ')
-    .trim();
+    .trim()
+    .replace(/[.]+$/, '');            // strip trailing periods (Deepgram adds ".")
 
 const clamp = (n: number, lo: number, hi: number) => Math.max(lo, Math.min(hi, n));
 const digitsOnly = (s: string) => s.replace(/[,_]/g, '');
@@ -490,6 +491,12 @@ export async function handleCommand(utterance: string, _context?: vscode.Extensi
       }
     }
   }
+
+    // bare "delete" / "delete line" / "delete this line" → delete current line (NOT cut)
+    if (ed && /^delete(\s+(line|this\s+line|this|that))?$/.test(s)) {
+      await vscode.commands.executeCommand('editor.action.deleteLines');
+      return true;
+    }
 
     // new line (above|below)
     if (/^new\s+line$/.test(s)) { await vscode.commands.executeCommand('editor.action.insertLineAfter'); return true; }

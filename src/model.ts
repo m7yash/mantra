@@ -2,7 +2,7 @@ import Cerebras from '@cerebras/cerebras_cloud_sdk';
 import * as vscode from 'vscode';
 import { canonicalCommandPhrases } from './commands';
 
-export type ReqType = 'command' | 'modification' | 'question' | 'terminal' | 'claude';
+export type ReqType = 'command' | 'modification' | 'question' | 'terminal' | 'claude' | 'codex' | 'agent';
 
 export type LlmProvider = 'cerebras' | 'groq';
 
@@ -15,7 +15,7 @@ export type RouteResult = { type: ReqType; payload: string; raw: string };
 export function parseLabeledPayload(raw: string): RouteResult {
   const s = (raw || '').trim();
   const fence = s.startsWith('```') ? s.replace(/^```[a-zA-Z]*\n?/, '').replace(/```\s*$/, '') : s;
-  const LABELS = 'question|command|modification|terminal|claude';
+  const LABELS = 'question|command|modification|terminal|claude|codex|agent';
   const labelRe = new RegExp(`^\\s*(${LABELS})\\b\\s*([\\s\\S]*)$`, 'i');
   const lineRe = new RegExp(`^(${LABELS})\\b`, 'i');
   let m = fence.match(labelRe);
@@ -27,7 +27,7 @@ export function parseLabeledPayload(raw: string): RouteResult {
   }
   const t = (m?.[1] || '').toLowerCase() as ReqType;
   const payload = (m?.[2] || '').replace(/^\s+/, '');
-  const VALID: Set<string> = new Set(['question', 'command', 'modification', 'terminal', 'claude']);
+  const VALID: Set<string> = new Set(['question', 'command', 'modification', 'terminal', 'claude', 'codex', 'agent']);
   const type: ReqType = VALID.has(t) ? t : 'question';
   return { type, payload, raw };
 }
@@ -249,6 +249,9 @@ function seedKeytermsBase(): string[] {
   // 4b) Mantra-specific terms — voice control keywords that must be recognized accurately
   const mantraTerms = [
     'Claude', 'ask Claude', 'tell Claude', 'hey Claude', 'focus Claude',
+    'Codex', 'codex', 'ask Codex', 'tell Codex', 'hey Codex', 'focus Codex',
+    'agent', 'ask agent', 'tell agent', 'hey agent', 'focus agent',
+    'LLM', 'ask LLM', 'tell LLM', 'ask the LLM', 'ask AI',
     'execute that', 'run that', 'hit enter', 'press enter',
     'accept changes', 'reject changes', 'new conversation',
     'pause', 'resume', 'stop listening', 'start listening',

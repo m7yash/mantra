@@ -11,7 +11,16 @@ import {
   isClaudeMode, setClaudeMode, isClaudeTerminalActive,
   claudeResume, claudeNewConversation, claudeSetModel,
   claudeHelp, claudeStatus, claudeCompact, claudeUndo, claudeInterrupt,
+  closeClaudeTerminal,
 } from './claude';
+import {
+  sendToCodexPanel, confirmCodex, typeInCodex,
+  codexArrowUp, codexArrowDown,
+  focusCodexPanel,
+  isCodexMode, setCodexMode, isCodexTerminalActive,
+  codexInterrupt,
+  closeCodexTerminal, checkCliInstalled,
+} from './codex';
 import { MantraSidebarProvider, LogEntry } from './sidebarProvider';
 import { exec } from 'child_process';
 import { initTerminalHistory, getLastTerminalOutput, getFullTerminalHistory, formatTerminalContext } from './terminalHistory';
@@ -35,6 +44,92 @@ function pushLog(kind: LogEntry['kind'], text: string, diff?: string): void {
   if (!sidebar) return;
   const time = new Date().toLocaleTimeString('en-US', { hour12: false, hour: '2-digit', minute: '2-digit', second: '2-digit' });
   sidebar.pushLog({ time, kind, text, diff });
+}
+
+/** Get the currently selected agent backend from settings. */
+function getSelectedAgent(): 'claude' | 'codex' {
+  return vscode.workspace.getConfiguration('mantra').get<string>('agentBackend', 'claude') as 'claude' | 'codex';
+}
+
+/** Check if the selected agent's mode or terminal is active (voice should go to agent). */
+function isAgentModeActive(): boolean {
+  const agent = getSelectedAgent();
+  if (agent === 'claude') return isClaudeMode() || isClaudeTerminalActive();
+  return isCodexMode() || isCodexTerminalActive();
+}
+
+/** Focus the selected agent's panel. */
+async function focusSelectedAgent(): Promise<void> {
+  const agent = getSelectedAgent();
+  if (agent === 'claude') {
+    // Close codex terminal to enforce mutual exclusivity
+    closeCodexTerminal();
+    await focusClaudePanel();
+  } else {
+    closeClaudeTerminal();
+    await focusCodexPanel();
+  }
+}
+
+/** Send a prompt to the selected agent. */
+async function sendToSelectedAgent(prompt: string): Promise<void> {
+  const agent = getSelectedAgent();
+  if (agent === 'claude') {
+    await sendToClaudePanel(prompt);
+  } else {
+    await sendToCodexPanel(prompt);
+  }
+}
+
+/** Type text into the selected agent's terminal (no Enter). */
+function typeInSelectedAgent(text: string): void {
+  const agent = getSelectedAgent();
+  if (agent === 'claude') {
+    typeInClaude(text);
+  } else {
+    typeInCodex(text);
+  }
+}
+
+/** Confirm (Enter) in the selected agent's terminal. */
+function confirmSelectedAgent(): void {
+  const agent = getSelectedAgent();
+  if (agent === 'claude') {
+    confirmClaude();
+  } else {
+    confirmCodex();
+  }
+}
+
+/** Arrow up in the selected agent's terminal. */
+function agentArrowUp(): void {
+  const agent = getSelectedAgent();
+  if (agent === 'claude') claudeArrowUp();
+  else codexArrowUp();
+}
+
+/** Arrow down in the selected agent's terminal. */
+function agentArrowDown(): void {
+  const agent = getSelectedAgent();
+  if (agent === 'claude') claudeArrowDown();
+  else codexArrowDown();
+}
+
+/** Interrupt the selected agent. */
+function interruptSelectedAgent(): void {
+  const agent = getSelectedAgent();
+  if (agent === 'claude') claudeInterrupt();
+  else codexInterrupt();
+}
+
+/** Check if the selected agent CLI is installed. */
+function isSelectedAgentInstalled(): boolean {
+  const agent = getSelectedAgent();
+  if (agent === 'claude') {
+    // Claude can use the VS Code extension command; check for CLI too
+    return true; // Claude is opened via VS Code extension, always "available"
+  }
+  return checkCliInstalled('codex');
 }
 
 /** Produce a compact unified-style diff between two texts (line-based). */
@@ -732,11 +827,16 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         e.affectsConfiguration('mantra.groqModel') ||
         e.affectsConfiguration('mantra.llmProvider') ||
         e.affectsConfiguration('mantra.deepgramApiKey') ||
-        e.affectsConfiguration('mantra.reasoningEffort')
+        e.affectsConfiguration('mantra.reasoningEffort') ||
+        e.affectsConfiguration('mantra.agentBackend') ||
+        e.affectsConfiguration('mantra.commandsOnly')
       ) {
         syncFromSettings();
+        const cfg = vscode.workspace.getConfiguration('mantra');
+        if (e.affectsConfiguration('mantra.commandsOnly')) {
+          sidebar?.postState({ commandsOnly: cfg.get<boolean>('commandsOnly', false) });
+        }
         if (model) {
-          const cfg = vscode.workspace.getConfiguration('mantra');
           if (e.affectsConfiguration('mantra.cerebrasApiKey')) {
             const newKey = (cfg.get<string>('cerebrasApiKey') || '').trim();
             if (newKey) { cerebrasApiKey = newKey; model.setCerebrasApiKey(newKey); }
@@ -821,7 +921,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
           sidebar?.postState({ mic: getMicName() });
 
           // Send PCM to Deepgram; show live transcription in the notification
-          const transcript = await model!.transcribeStream(pcm, (partial) => {
+          let transcript = await model!.transcribeStream(pcm, (partial) => {
             if (partial) reportProgress?.(partial);
           });
 
@@ -830,10 +930,14 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 
           if (!transcript) return;
 
+          // Fix common Deepgram misrecognition: "codecs" → "codex"
+          // Deepgram often hears "codex" as "codecs" since it's a more common English word
+          transcript = transcript.replace(/\bcodecs\b/gi, 'codex');
+
           // Secondary noise filter — catch anything the STT noise gate missed
-          // In Claude mode, allow yes/no/yeah/ok through (needed for permission prompts)
-          const inClaude = isClaudeMode() || isClaudeTerminalActive();
-          const NOISE_RE = inClaude
+          // In agent mode, allow yes/no/yeah/ok through (needed for permission prompts)
+          const inAgent = isAgentModeActive();
+          const NOISE_RE = inAgent
             ? /^(two|to|too|four|for|ate|eight|one|won|the|a|an|uh|um|oh|ah|hmm|huh|it|is|i|so|but|hey|hi|bye|hm|mm)\.?$/i
             : /^(two|to|too|four|for|ate|eight|one|won|the|a|an|uh|um|oh|ah|hmm|huh|it|is|i|so|but|yeah|yep|nah|no|yes|ok|hey|hi|bye|hm|mm)\.?$/i;
           if (NOISE_RE.test(transcript.trim())) {
@@ -861,9 +965,9 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
           // --- terminal execute / enter shortcut (pre-LLM) ---
           // Use both t (raw) and tc (punctuation-stripped) — Flux often adds "."
           if (/^(execute|execute that|run that|hit enter|press enter|submit|enter)\.?$/i.test(t)) {
-            if (isClaudeMode() || isClaudeTerminalActive()) {
-              confirmClaude();
-              pushLog('command', 'Confirmed Claude (Enter)');
+            if (isAgentModeActive()) {
+              confirmSelectedAgent();
+              pushLog('command', `Confirmed ${getSelectedAgent()} (Enter)`);
             } else {
               executeLastTyped();
               pushLog('terminal', 'Executed last typed command');
@@ -871,9 +975,16 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
             return;
           }
 
-          // --- Auto-detect Claude mode from active terminal ---
-          if (!isClaudeMode() && isClaudeTerminalActive()) {
-            setClaudeMode(true);
+          // --- Auto-detect agent mode from active terminal ---
+          // Only auto-activate the SELECTED agent's mode
+          {
+            const agent = getSelectedAgent();
+            if (agent === 'claude' && !isClaudeMode() && isClaudeTerminalActive()) {
+              setClaudeMode(true);
+            }
+            if (agent === 'codex' && !isCodexMode() && isCodexTerminalActive()) {
+              setCodexMode(true);
+            }
           }
 
           // --- Claude diff actions (always available) ---
@@ -919,9 +1030,9 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
             pushLog('claude', 'Claude undo');
             return;
           }
-          if (/^(stop|cancel|interrupt|stop claude|cancel claude|nevermind|never mind)$/i.test(t) && isClaudeMode()) {
-            claudeInterrupt();
-            pushLog('claude', 'Interrupted Claude');
+          if (/^(stop|cancel|interrupt|stop claude|cancel claude|stop codex|cancel codex|stop agent|cancel agent|nevermind|never mind)$/i.test(t) && isAgentModeActive()) {
+            interruptSelectedAgent();
+            pushLog(getSelectedAgent(), `Interrupted ${getSelectedAgent()}`);
             return;
           }
           // "set model to X" / "use sonnet" / "switch to opus" etc.
@@ -966,8 +1077,8 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
               exec(`osascript -e 'tell application "System Events" to key code 36'`, (err) => {
                 if (err) console.warn('[Mantra] click failed:', err.message);
               });
-            } else if (isClaudeMode() || isClaudeTerminalActive()) {
-              confirmClaude();
+            } else if (isAgentModeActive()) {
+              confirmSelectedAgent();
             } else {
               executeLastTyped();
             }
@@ -988,27 +1099,28 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
             }
           }
 
-          // --- Claude mode: "enter"/"yes" to confirm, arrow keys ---
-          if (isClaudeMode() || isClaudeTerminalActive()) {
+          // --- Agent mode: "enter"/"yes" to confirm, arrow keys ---
+          if (isAgentModeActive()) {
             // Enter / confirm (use tc for punctuation-stripped matching)
             if (/^(yes|yeah|yep|sure|allow|confirm|go ahead|do it|proceed|ok|okay|enter|select|sounds good)$/i.test(tc)) {
-              confirmClaude();
+              confirmSelectedAgent();
               return;
             }
-            // Arrow keys for navigating Claude menus
+            // Arrow keys for navigating agent menus
             if (/^(up|go up|move up|previous|arrow up)$/i.test(tc)) {
-              claudeArrowUp();
+              agentArrowUp();
               return;
             }
             if (/^(down|go down|move down|next|arrow down)$/i.test(tc)) {
-              claudeArrowDown();
+              agentArrowDown();
               return;
             }
           }
 
           // --- focus management (always available, use tc for punctuation tolerance) ---
-          if (/^(focus editor|go to editor|go to code|switch to editor|back to editor|back to code|exit claude|leave claude|stop claude mode|go back|go back to editor)$/i.test(tc)) {
+          if (/^(focus editor|go to editor|go to code|switch to editor|back to editor|back to code|exit claude|leave claude|exit codex|leave codex|exit agent|leave agent|stop claude mode|stop codex mode|stop agent mode|go back|go back to editor)$/i.test(tc)) {
             if (isClaudeMode()) setClaudeMode(false);
+            if (isCodexMode()) setCodexMode(false);
             await vscode.commands.executeCommand('workbench.action.focusFirstEditorGroup');
             vscode.window.setStatusBarMessage('Focused editor', 1500);
             pushLog('command', 'Focus editor');
@@ -1016,17 +1128,14 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
           }
           if (/^(focus terminal|go to terminal|switch to terminal|back to terminal)$/i.test(tc)) {
             if (isClaudeMode()) setClaudeMode(false);
+            if (isCodexMode()) setCodexMode(false);
             await vscode.commands.executeCommand('workbench.action.terminal.focus');
             pushLog('command', 'Focus terminal');
             return;
           }
 
-          // --- enter Claude mode explicitly ---
-          if (/^(focus claude|switch to claude|go to claude|open claude|claude mode|talk to claude)$/i.test(t)) {
-            await focusClaudePanel();
-            pushLog('command', 'Focus Claude');
-            return;
-          }
+          // --- commands-only check (read once for this utterance) ---
+          const commandsOnly = vscode.workspace.getConfiguration('mantra').get<boolean>('commandsOnly', false);
 
           // --- quick command paths ---
           const maybeHandled = await tryExecuteMappedCommand(transcript);
@@ -1034,9 +1143,34 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
           if (await handleTextCommand(transcript, context)) { pushLog('command', transcript); return; }
 
           // --- LLM disabled? ---
-          const commandsOnly = vscode.workspace.getConfiguration('mantra').get<boolean>('commandsOnly', false);
           if (commandsOnly) {
-            vscode.window.setStatusBarMessage('Mantra: commands-only (LLM disabled)', 1500);
+            console.log(`[Mantra] Commands-only: no match for "${transcript}"`);
+            vscode.window.setStatusBarMessage(`Commands-only: unrecognized "${transcript}"`, 2000);
+            return;
+          }
+
+          // --- "ask codex/claude/agent/LLM <prompt>" pre-LLM shortcut ---
+          {
+            const agentAskMatch = tc.match(/^(?:ask|tell|hey)\s+(?:codex|claude|agent|llm|ai|the\s+agent|the\s+llm)\b[,\s]*(.+)/i);
+            if (agentAskMatch && agentAskMatch[1].trim()) {
+              const prompt = agentAskMatch[1].replace(/^(uh|um|like|so|to|,)+\s*/i, '').trim();
+              if (prompt) {
+                const agent = getSelectedAgent();
+                if (isAgentModeActive()) {
+                  typeInSelectedAgent(prompt);
+                } else {
+                  await sendToSelectedAgent(buildClaudePrompt(prompt));
+                }
+                pushLog(agent, prompt);
+                return;
+              }
+            }
+          }
+
+          // --- enter agent mode explicitly (all names route to selected agent) ---
+          if (/^(focus claude|switch to claude|go to claude|open claude|claude mode|talk to claude|focus codex|switch to codex|go to codex|open codex|codex mode|talk to codex|focus agent|switch to agent|go to agent|open agent|agent mode|talk to agent|focus llm|open llm|talk to llm)$/i.test(t)) {
+            await focusSelectedAgent();
+            pushLog('command', `Focus ${getSelectedAgent()}`);
             return;
           }
 
@@ -1099,18 +1233,17 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
                 pushLog('terminal', `Executed: ${shellCmd}`);
               }
             }
-          } else if (result.type === 'claude') {
+          } else if (result.type === 'claude' || result.type === 'codex' || result.type === 'agent') {
+            // All agent types route to the currently selected agent
             const prompt = (result.payload || '').trim();
             if (prompt) {
-              if (isClaudeMode() || isClaudeTerminalActive()) {
-                // Already at Claude terminal — type without Enter.
-                // User says "enter" to submit.
-                typeInClaude(prompt);
+              const agent = getSelectedAgent();
+              if (isAgentModeActive()) {
+                typeInSelectedAgent(prompt);
               } else {
-                // Not at Claude — open terminal and auto-submit.
-                await sendToClaudePanel(buildClaudePrompt(prompt));
+                await sendToSelectedAgent(buildClaudePrompt(prompt));
               }
-              pushLog('claude', prompt);
+              pushLog(agent, prompt);
             }
           } else if (result.type === 'command') {
             const phrase = (result.payload || '').toString().trim();
@@ -1136,11 +1269,11 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
               pushLog('modification', `Modified ${filename}`, diff || undefined);
             }
           } else {
-            // "question" type — if Claude is active, type into Claude;
+            // "question" type — if agent is active, type into it;
             // otherwise show answer in the output panel.
-            if (isClaudeMode() || isClaudeTerminalActive()) {
-              typeInClaude(transcript);
-              pushLog('claude', transcript);
+            if (isAgentModeActive()) {
+              typeInSelectedAgent(transcript);
+              pushLog(getSelectedAgent(), transcript);
             } else {
               const answer = result.payload;
               if ((answer || '').toLowerCase().replace(/[^\w\s]/g, '').trim() === 'thank you') return;
@@ -1220,6 +1353,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       const cfg = vscode.workspace.getConfiguration('mantra');
       const current = cfg.get<boolean>('commandsOnly', false);
       await cfg.update('commandsOnly', !current, vscode.ConfigurationTarget.Global);
+      sidebar?.postState({ commandsOnly: !current });
       vscode.window.setStatusBarMessage(
         `Mantra: commands-only ${!current ? 'enabled' : 'disabled'}`,
         2000
@@ -1409,9 +1543,19 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   // Track terminal command history for Claude context
   context.subscriptions.push(...initTerminalHistory());
 
-  // Focus Claude Code sidebar panel
+  // Focus Claude Code sidebar panel (routes to selected agent)
   const focusClaudeDisposable = vscode.commands.registerCommand('mantra.focusClaude', () => {
-    focusClaudePanel();
+    focusSelectedAgent();
+  });
+
+  // Focus Codex CLI terminal (routes to selected agent)
+  const focusCodexDisposable = vscode.commands.registerCommand('mantra.focusCodex', () => {
+    focusSelectedAgent();
+  });
+
+  // Focus the currently selected agent
+  const focusAgentDisposable = vscode.commands.registerCommand('mantra.focusAgent', () => {
+    focusSelectedAgent();
   });
 
   // Sidebar panel
@@ -1435,12 +1579,69 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     console.log(`[Mantra] Prompt "${key}" updated from sidebar (${text.length} chars)`);
   });
 
-  // Push initial prompt values to sidebar
+  // Agent backend change from sidebar
+  sidebar.onAgentChange((agent) => {
+    const cfg = vscode.workspace.getConfiguration('mantra');
+    cfg.update('agentBackend', agent, vscode.ConfigurationTarget.Global);
+    console.log(`[Mantra] Agent backend changed to: ${agent}`);
+
+    // Close the other agent's terminal to enforce mutual exclusivity
+    if (agent === 'claude') {
+      closeCodexTerminal();
+    } else {
+      closeClaudeTerminal();
+    }
+
+    // Check if the new agent is installed and push status to sidebar
+    const installed = agent === 'claude' ? true : checkCliInstalled('codex');
+    sidebar?.postState({ agentBackend: agent, agentInstalled: installed });
+  });
+
+  // LLM provider change from sidebar
+  sidebar.onProviderChange((provider) => {
+    const cfg = vscode.workspace.getConfiguration('mantra');
+    cfg.update('llmProvider', provider, vscode.ConfigurationTarget.Global);
+    if (model) model.setProvider(provider as any);
+    console.log(`[Mantra] LLM provider changed to: ${provider}`);
+  });
+
+  // Model change from sidebar
+  sidebar.onModelChange((modelId) => {
+    const cfg = vscode.workspace.getConfiguration('mantra');
+    const provider = cfg.get<string>('llmProvider') || 'groq';
+    if (provider === 'groq') {
+      cfg.update('groqModel', modelId, vscode.ConfigurationTarget.Global);
+      if (model) model.setGroqModel(modelId);
+    }
+    console.log(`[Mantra] LLM model changed to: ${modelId}`);
+  });
+
+  // Install agent from sidebar
+  sidebar.onInstallAgent(() => {
+    const agent = getSelectedAgent();
+    const pkg = agent === 'codex' ? '@openai/codex' : '@anthropic-ai/claude-code';
+    const installTerminal = vscode.window.createTerminal({ name: `Install ${agent}`, isTransient: true });
+    installTerminal.show(true);
+    installTerminal.sendText(`npm install -g ${pkg}`, true);
+    console.log(`[Mantra] Installing ${agent} via npm`);
+  });
+
+  // Push initial state to sidebar
   {
     const cfg = vscode.workspace.getConfiguration('mantra');
+    const agent = cfg.get<string>('agentBackend') || 'claude';
+    const provider = cfg.get<string>('llmProvider') || 'groq';
+    const groqModel = cfg.get<string>('groqModel') || 'openai/gpt-oss-20b';
+    const installed = agent === 'claude' ? true : checkCliInstalled('codex');
+    const cmdOnly = cfg.get<boolean>('commandsOnly', false);
     sidebar.postState({
       routerPrompt: cfg.get<string>('prompt') || '',
       memoryPrompt: cfg.get<string>('memoryPrompt') || '',
+      agentBackend: agent,
+      agentInstalled: installed,
+      llmProvider: provider,
+      llmModel: groqModel,
+      commandsOnly: cmdOnly,
     });
   }
 
@@ -1471,6 +1672,8 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     editGroqCmd,
     editDeepgramCmd,
     focusClaudeDisposable,
+    focusCodexDisposable,
+    focusAgentDisposable,
     testMicCmd
   );
 }

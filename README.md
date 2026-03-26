@@ -2,7 +2,7 @@
 
 Code with your thoughts, not your keyboard. Extremely accurate, absurdly fast.
 
-Mantra listens to your voice and instantly edits code, runs IDE commands, executes terminal commands, interacts with Claude Code, or answers your questions — all hands-free.
+Mantra listens to your voice and instantly edits code, runs IDE commands, executes terminal commands, interacts with AI agents (Claude Code or Codex CLI), or answers your questions — all hands-free.
 
 Get started for free!
 
@@ -23,8 +23,8 @@ Discord: https://discord.gg/fmWCScWuUn
    - **modification** — applies an edit to the current file (changes are highlighted in green/red)
    - **question** — shows the answer in a separate panel
    - **terminal** — translates natural language to a shell command and executes it
-   - **claude** — forwards an intelligent, context-aware prompt to Claude Code
-3. **Pre-LLM shortcuts:** Common phrases like "undo", "save", "enter", "focus editor", and keyboard shortcuts are handled instantly without waiting for the LLM.
+   - **agent** — forwards an intelligent, context-aware prompt to the selected AI agent (Claude Code or Codex CLI)
+3. **Pre-LLM shortcuts:** Common phrases like "undo", "save", "scroll down", "enter", "delete", "focus editor", "ask Claude ...", and keyboard shortcuts are handled instantly without waiting for the LLM.
 
 ---
 
@@ -63,6 +63,8 @@ Run **"Mantra: Start Recording"** from the Command Palette, press `Ctrl+Shift+1`
 - "undo", "redo", "save", "format document"
 - "close this file", "open utils dot java"
 - "select lines 4 to 19", "go to line 20"
+- "delete", "delete line", "delete this line"
+- "scroll down", "scroll up 5 lines", "page up"
 - "toggle sidebar", "zen mode", "zoom in"
 - "focus editor", "focus terminal", "focus explorer"
 
@@ -90,26 +92,31 @@ Say "pause" or "stop listening" to pause. Say "resume" or use `Ctrl+Shift+1` to 
 
 ---
 
-## Claude Code Integration
+## Agent Integration (Claude Code & Codex CLI)
 
-Mantra integrates with the [Claude Code VS Code extension](https://marketplace.visualstudio.com/items?itemName=anthropic.claude-code). You need:
-1. The Claude Code VS Code extension installed
-2. The `claude` CLI available in your PATH (the extension can install this, or run: `echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.zshrc && source ~/.zshrc`)
+Mantra supports two AI agent backends: **Claude Code** (via the VS Code extension) and **Codex CLI** (via `npm install -g @openai/codex`). Only one agent can be active at a time — select which one to use from the **Agent** dropdown in the sidebar Settings section.
 
-### Sending prompts to Claude
-Say "ask Claude to refactor this function" or "tell Claude to add unit tests". Mantra's LLM uses conversation memory and terminal history to craft a context-aware prompt — so you can say vague things like "ask Claude how to fix that" and it will resolve "that" to whatever you were just working on.
+### Prerequisites
 
-### When Claude is running
-While the Claude terminal is active:
+- **Claude Code** — Install the [Claude Code VS Code extension](https://marketplace.visualstudio.com/items?itemName=anthropic.claude-code). The `claude` CLI must be in your PATH.
+- **Codex CLI** — Install via `npm install -g @openai/codex`. If the CLI is not found, an install button appears in the sidebar.
+
+### Sending prompts to the agent
+Say "ask Claude to refactor this function", "tell Codex to add unit tests", "ask agent how to fix that", or "ask LLM to explain this error". All of these — regardless of which name you use — route to whichever agent is currently selected. Mantra's LLM uses conversation memory and terminal history to craft a context-aware prompt, so you can say vague things like "ask Claude how to fix that" and it will resolve "that" to whatever you were just working on.
+
+Common phrases like "ask Claude ...", "tell Codex ...", "ask agent ...", "ask LLM ...", "ask AI ..." are intercepted before the LLM for instant routing.
+
+### When the agent is running
+While the agent terminal is active:
 - **Commands still work normally** — "save file", "undo", "focus terminal" all execute as usual
-- **Questions and conversation go to Claude** — "how do I fix this error?" types into Claude
+- **Questions and conversation go to the agent** — "how do I fix this error?" types into the agent
 - **"enter"** — presses Enter (confirms permission prompts, submits input)
-- **"up" / "down"** — arrow keys for navigating Claude's selection menus
+- **"up" / "down"** — arrow keys for navigating selection menus
 - **"yes" / "ok" / "go ahead"** — confirms the current selection
 - **"focus editor" / "go back"** — switches back to the editor
-- **"focus claude" / "open claude"** — switches to (or opens) the Claude terminal
+- **"focus agent" / "open claude" / "open codex"** — switches to (or opens) the agent terminal
 
-### Claude CLI commands (voice)
+### Agent CLI commands (voice)
 - "new conversation" / "clear conversation"
 - "resume conversation"
 - "set model to [model name]"
@@ -127,13 +134,31 @@ Mantra adds a panel to the VS Code activity bar. From the sidebar you can:
 
 - **Start / Pause listening** with a single toggle button
 - **Test Microphone** — verify your mic is working with a live volume meter (no STT needed)
-- **Activity Log** — scrollable history of every transcript, command, code edit, terminal action, question, and Claude interaction. Code modifications include a "Show diff" toggle to view exactly what changed.
-- **Focus** — quick buttons to switch between Editor, Terminal, Claude, Explorer, Search, and Source Control
-- **Settings** — microphone picker, commands-only toggle, all settings, keyboard shortcuts
+- **Activity Log** — scrollable history of every transcript, command, code edit, terminal action, question, and agent interaction. Code modifications include a "Show diff" toggle to view exactly what changed.
+- **Focus** — quick buttons to switch between Editor, Terminal, Agent, Explorer, Search, and Source Control
+- **Settings**
+  - **Agent** — choose between Claude Code and Codex CLI (only one active at a time). Shows an install button if the selected agent's CLI is not found.
+  - **LLM Provider** — Groq or Cerebras
+  - **Model** — select the LLM model (options update based on provider)
+  - **Microphone** — pick your input device
+  - **Commands-Only Mode** — toggle with ON/OFF indicator (see below)
+  - **All Settings** / **Keyboard Shortcuts**
 - **API Keys** — configure Deepgram, Groq, and Cerebras keys
 - **Session Memory** — view and edit the running session context that the LLM uses. Edits take effect immediately.
 - **Router Prompt** — view and edit the main LLM system prompt directly in the sidebar
 - **Memory Manager Prompt** — view and edit the prompt that controls how session memory is summarized
+
+---
+
+## Commands-Only Mode
+
+Toggle via the sidebar or Command Palette. When enabled (shown as **ON** in the sidebar):
+
+- **No LLM calls** — speech is still transcribed via Deepgram, but the transcript is only matched against pre-mapped commands and text operations.
+- **What works:** all 75+ IDE commands ("save", "undo", "format document"), text operations ("go to line 20", "select lines 4 to 19", "scroll down", "delete line"), keyboard shortcuts ("command B"), focus/navigation commands, and pause/resume.
+- **What doesn't work:** code edits, questions, terminal command generation, and agent forwarding — anything that requires the LLM to interpret intent.
+
+This is useful for low-latency command execution without any API calls beyond speech-to-text, or when you don't have an LLM API key configured.
 
 ---
 
@@ -149,7 +174,7 @@ The session memory and both LLM prompts (router and memory manager) are visible 
 
 Mantra automatically captures terminal commands and their output via VS Code shell integration. This history is:
 - Included as context for the LLM (so it knows what you just ran and what happened)
-- Used when forwarding to Claude (so Claude can see errors and output)
+- Used when forwarding to the agent (so the agent can see errors and output)
 - Stored for the session (up to 50 commands)
 
 ---
@@ -161,7 +186,9 @@ Mantra automatically captures terminal commands and their output via VS Code she
 - **Open Settings** — `Ctrl+Shift+3`
 - **Select Microphone** — `Ctrl+Shift+4`
 - **Test Microphone** — available from sidebar or Command Palette
-- **Focus Claude Code Panel** — available from sidebar or Command Palette
+- **Focus Agent Panel** — available from sidebar or Command Palette
+- **Focus Claude Code Panel** — available from Command Palette
+- **Focus Codex CLI Panel** — available from Command Palette
 
 All shortcuts can be customized in **File > Preferences > Keyboard Shortcuts** (search "mantra"), or via the Keyboard Shortcuts button in the sidebar.
 
@@ -171,12 +198,13 @@ All shortcuts can be customized in **File > Preferences > Keyboard Shortcuts** (
 
 Open **Settings > Extensions > Mantra** to adjust:
 
+- **Agent Backend** — Choose between **Claude Code** (default) or **Codex CLI**. Only one agent can be active at a time.
 - **LLM Provider** — Choose between **Groq** (default) or **Cerebras**.
 - **Groq Model** — `openai/gpt-oss-20b` (faster, default) or `openai/gpt-oss-120b` (more capable).
 - **Reasoning Effort** — Low (default), medium, or high.
 - **Prompt** — Customize the LLM system prompt (also editable in the sidebar).
 - **Memory Manager Prompt** — Customize the prompt that summarizes session context (also editable in the sidebar).
-- **Commands Only** — Bypass the LLM entirely. Only pre-mapped commands work (you must say the exact command phrase).
+- **Commands Only** — Bypass the LLM entirely. Only pre-mapped commands and text operations work.
 - **Microphone Input** — Set via Command Palette > "Mantra: Select Microphone". Advanced users can paste raw FFmpeg input args.
 
 ---
@@ -195,6 +223,7 @@ Open **Settings > Extensions > Mantra** to adjust:
 
 - **No mic on macOS** — Allow VS Code under *System Settings > Privacy & Security > Microphone*.
 - **"Command not found: claude"** — Add the CLI to your PATH: `echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.zshrc && source ~/.zshrc`
+- **Codex CLI not found** — Install via `npm install -g @openai/codex`, or use the install button in the sidebar.
 - **Ghost transcriptions ("two", "four")** — These are filtered automatically. If ambient noise is high, consider adjusting your microphone position.
 - **File not found** — Include punctuation words when speaking filenames: "open auth dot controller dot ts".
 - **Logs** — Check **View > Output > Mantra** for detailed logs including which microphone is being used. The sidebar Activity Log also shows a history of all transcripts and actions.
@@ -205,7 +234,9 @@ Open **Settings > Extensions > Mantra** to adjust:
 
 Over 75 pre-mapped VS Code commands. You can say these exactly or use natural variations (the LLM understands intent):
 
-> save, save all, new file, close file, close other files, close all files, reopen closed editor, undo, redo, cut, copy, paste, select all, toggle line comment, toggle block comment, format document, format selection, rename symbol, quick fix, organize imports, expand selection, shrink selection, select next occurrence, duplicate line down, duplicate line up, move line up, move line down, add cursor above, add cursor below, fold all, unfold all, toggle word wrap, find, replace, find in files, replace in files, back, forward, next tab, previous tab, tab one through tab nine, page up, page down, go to definition, peek definition, go to references, go to implementation, jump to bracket, focus editor, focus first editor, focus second editor, focus sidebar, focus panel, toggle output, toggle sidebar, toggle panel, toggle zen mode, split editor, toggle minimap, zoom in, zoom out, reset zoom, toggle terminal, focus terminal, new terminal, next terminal, previous terminal, focus claude, new conversation, accept changes, reject changes, focus explorer, focus search, focus source control, focus debug, focus extensions, show command palette, quick open, toggle breakpoint, start debugging, stop debugging, continue debugging, step over, step into, step out.
+> save, save all, new file, close file, close other files, close all files, reopen closed editor, undo, redo, cut, copy, paste, select all, toggle line comment, toggle block comment, format document, format selection, rename symbol, quick fix, organize imports, expand selection, shrink selection, select next occurrence, duplicate line down, duplicate line up, move line up, move line down, add cursor above, add cursor below, fold all, unfold all, toggle word wrap, find, replace, find in files, replace in files, back, forward, next tab, previous tab, tab one through tab nine, page up, page down, go to definition, peek definition, go to references, go to implementation, jump to bracket, focus editor, focus first editor, focus second editor, focus sidebar, focus panel, toggle output, toggle sidebar, toggle panel, toggle zen mode, split editor, toggle minimap, zoom in, zoom out, reset zoom, toggle terminal, focus terminal, new terminal, next terminal, previous terminal, focus agent, new conversation, accept changes, reject changes, focus explorer, focus search, focus source control, focus debug, focus extensions, show command palette, quick open, toggle breakpoint, start debugging, stop debugging, continue debugging, step over, step into, step out.
+
+Additional text operations handled directly (no LLM needed): go to line N, select/copy/cut/delete line N, select/copy/cut/delete lines A to B, scroll up/down [N lines/pages], page up/down, new line above/below, indent, outdent, delete, paste.
 
 ---
 
