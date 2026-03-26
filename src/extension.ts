@@ -23,6 +23,8 @@ let outputChannel: vscode.OutputChannel | null = null;
 
 // Track explicit pause state separate from recorder process state
 let __mantraPaused = false;
+// Guard against double-entry into the listening loop
+let __mantraSessionActive = false;
 
 /** If the prompt references terminal output/errors, save terminal history to a temp file and reference it. */
 const TERMINAL_CONTEXT_RE = /\b(error|fix|debug|wrong|fail|broke|broken|crash|issue|bug|output|terminal|what happened|went wrong|doesn't work|not working|won't run)\b/i;
@@ -684,12 +686,13 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   }
 
   const startDisposable = vscode.commands.registerCommand('mantra.start', async () => {
-    __mantraPaused = false;
-    if (recorderActive()) {
-      vscode.window.showInformationMessage('Already listening.');
-      console.log('Already listening, ignoring start');
+    if (__mantraSessionActive) {
+      vscode.window.showInformationMessage('Mantra is already listening.');
+      console.log('[Mantra] Session already active, ignoring start');
       return;
     }
+    __mantraPaused = false;
+    __mantraSessionActive = true;
     if (!(await ensureApiKeys(context))) return;
 
     console.log('[Mantra] STT model: Flux');
@@ -969,10 +972,12 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     // Close the progress notification when loop exits
     if (endProgress) endProgress();
     await progressPromise;
+    __mantraSessionActive = false;
   });
 
   const pauseDisposable = vscode.commands.registerCommand('mantra.pause', () => {
     __mantraPaused = true;
+    __mantraSessionActive = false;
     pauseRecording();
     vscode.window.showInformationMessage('Mantra paused');
     console.log('Paused');
