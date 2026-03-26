@@ -732,7 +732,11 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
           if (!transcript) return;
 
           // Secondary noise filter — catch anything the STT noise gate missed
-          const NOISE_RE = /^(two|to|too|four|for|ate|eight|one|won|the|a|an|uh|um|oh|ah|hmm|huh|it|is|i|so|but|yeah|yep|nah|hey|hi|bye|ok|hm|mm)\.?$/i;
+          // In Claude mode, allow yes/no/yeah/ok through (needed for permission prompts)
+          const inClaude = isClaudeMode() || isClaudeTerminalActive();
+          const NOISE_RE = inClaude
+            ? /^(two|to|too|four|for|ate|eight|one|won|the|a|an|uh|um|oh|ah|hmm|huh|it|is|i|so|but|hey|hi|bye|hm|mm)\.?$/i
+            : /^(two|to|too|four|for|ate|eight|one|won|the|a|an|uh|um|oh|ah|hmm|huh|it|is|i|so|but|yeah|yep|nah|no|yes|ok|hey|hi|bye|hm|mm)\.?$/i;
           if (NOISE_RE.test(transcript.trim())) {
             console.log('[Mantra] Secondary noise filter caught:', transcript);
             return;

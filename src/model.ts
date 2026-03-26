@@ -533,8 +533,8 @@ export class Model {
         // numbers (common phantom detections from ambient noise)
         'one', 'two', 'three', 'four', 'five', 'six', 'seven', 'eight',
         'nine', 'ten', 'to', 'too', 'for', 'ate', 'won',
-        // other short noise
-        'yeah', 'yep', 'nah', 'no', 'yes', 'hey', 'hi', 'bye', 'ok',
+        // other short filler (NOT yes/no/yeah/ok — those are intentional responses)
+        'hey', 'hi', 'bye', 'hm', 'mm',
       ]);
       const isNoiseWord = (txt: string): boolean => {
         if (!txt || !txt.trim()) return true;  // empty = noise
