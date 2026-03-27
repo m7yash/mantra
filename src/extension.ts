@@ -106,8 +106,10 @@ function pushLog(kind: LogEntry['kind'], text: string, diff?: string, diffId?: n
   sidebar.pushLog({ time, kind, text, diff, diffId });
 }
 
-/** Show a quick answer in the Mantra output panel (or info toast as fallback). */
-function showQuickAnswer(payload: string | undefined, transcript: string): void {
+/** Show a quick answer in the Mantra output panel (or info toast as fallback).
+ *  When implicitFallback is true, the user didn't say "quick question" explicitly —
+ *  they have no agent selected, so we prepend a note suggesting they select one. */
+function showQuickAnswer(payload: string | undefined, transcript: string, implicitFallback = false): void {
   const answer = payload;
   if ((answer || '').toLowerCase().replace(/[^\w\s]/g, '').trim() === 'thank you') return;
   if (outputChannel && answer) {
@@ -116,6 +118,9 @@ function showQuickAnswer(payload: string | undefined, transcript: string): void 
     const q = transcript.trim();
     const a = (answer || '').trim();
     outputChannel.appendLine(`[${time}] Q: ${q}`);
+    if (implicitFallback) {
+      outputChannel.appendLine('(No agent selected — select Claude Code or Codex in Settings for better handling of complex requests.)\n');
+    }
     outputChannel.appendLine(a);
     outputChannel.appendLine(sep);
     outputChannel.show(true);
@@ -1491,16 +1496,15 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
           }
 
           // --- "ask codex/claude/agent/LLM <prompt>" pre-LLM shortcut ---
+          // When no agent is selected, skip this shortcut and let the LLM handle it
+          // (it will route to quick question as a fallback).
           {
             const agentAskMatch = tc.match(/^(?:ask|tell|hey)\s+(?:codex|claude|agent|llm|ai|the\s+agent|the\s+llm)\b[,\s]*(.+)/i);
-            if (agentAskMatch && agentAskMatch[1].trim()) {
+            if (agentAskMatch && agentAskMatch[1].trim() && getSelectedAgent() !== 'none') {
               const prompt = agentAskMatch[1].replace(/^(uh|um|like|so|to|,)+\s*/i, '').trim();
               if (prompt) {
-                const agent = getSelectedAgent();
-                if (agent === 'none') {
-                  vscode.window.showWarningMessage('No agent selected — select Claude Code or Codex in the sidebar to use agent mode.');
-                  pushLog('error', 'No agent selected');
-                } else if (isAgentModeActive()) {
+                const agent = getSelectedAgent() as 'claude' | 'codex';
+                if (isAgentModeActive()) {
                   typeInSelectedAgent(prompt);
                   pushLog(agent, prompt);
                 } else {
@@ -1634,6 +1638,13 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
             result = { ...result, type: 'question' as any };
           }
 
+          // No-agent override — force agent-type results to question.
+          // The prompt tells the LLM not to return "agent" when no agent is active,
+          // but if it slips through, convert it to a question.
+          if (getSelectedAgent() === 'none' && (result.type === 'agent' || result.type === 'claude' || result.type === 'codex')) {
+            result = { ...result, type: 'question' as any };
+          }
+
           if (result.type === 'terminal') {
             const shellCmd = (result.payload || '').trim();
             if (shellCmd) {
@@ -1653,8 +1664,8 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
             if (prompt) {
               const agent = getSelectedAgent();
               if (agent === 'none') {
-                // No agent selected — answer as quick question instead
-                showQuickAnswer(result.payload, transcript);
+                // No agent selected — answer as quick question instead (with note)
+                showQuickAnswer(result.payload, transcript, true);
               } else if (isAgentModeActive()) {
                 typeInSelectedAgent(prompt);
                 pushLog(agent, prompt);
@@ -1732,7 +1743,9 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
               }
               pushLog(agent as LogEntry['kind'], transcript);
             } else {
-              showQuickAnswer(result.payload, transcript);
+              // implicit fallback = user didn't say "quick question" but no agent is selected
+              const implicitFallback = !isQuickQuestion && agent === 'none';
+              showQuickAnswer(result.payload, transcript, implicitFallback);
             }
           }
 
@@ -2177,27 +2190,42 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
           result = { ...result, type: 'question' as any };
         }
 
-        pushLog(result.type as LogEntry['kind'], result.payload?.substring(0, 200) || transcript);
+        // No-agent override — force agent-type results to question (same as main loop)
+        if (getSelectedAgent() === 'none' && (result.type === 'agent' || result.type === 'claude' || result.type === 'codex')) {
+          result = { ...result, type: 'question' as any };
+        }
 
-        // Apply result (same logic as main loop)
+        // Apply result (same logic as main loop — each handler does its own logging)
         if (result.type === 'terminal') {
           const shellCmd = (result.payload || '').trim();
           if (shellCmd) {
             const shouldWait = /\b(don'?t (run|execute)|but (wait|hold|don'?t)|and (wait|hold)|just type|type it|don'?t hit enter|wait)\b/i.test(transcript);
-            if (shouldWait) { typeInTerminal(shellCmd); } else { executeInTerminal(shellCmd); }
+            if (shouldWait) {
+              typeInTerminal(shellCmd);
+              pushLog('terminal', `Typed: ${shellCmd}`);
+            } else {
+              executeInTerminal(shellCmd);
+              pushLog('terminal', `Executed: ${shellCmd}`);
+            }
           }
         } else if (result.type === 'claude' || result.type === 'codex' || result.type === 'agent') {
           const prompt = (result.payload || '').trim();
           if (prompt) {
             const agent = getSelectedAgent();
-            if (agent !== 'none') {
-              if (isAgentModeActive()) typeInSelectedAgent(prompt);
-              else await sendToSelectedAgent(buildClaudePrompt(prompt));
+            if (agent === 'none') {
+              showQuickAnswer(result.payload, transcript, true);
+            } else if (isAgentModeActive()) {
+              typeInSelectedAgent(prompt);
+              pushLog(agent, prompt);
+            } else {
+              await sendToSelectedAgent(buildClaudePrompt(prompt));
+              pushLog(agent, prompt);
             }
           }
         } else if (result.type === 'command') {
           const phrase = (result.payload || '').toString().trim();
-          await handleTextCommand(phrase, context) || await tryExecuteMappedCommand(phrase);
+          const ok = await handleTextCommand(phrase, context) || await tryExecuteMappedCommand(phrase);
+          pushLog('command', phrase);
         } else if (result.type === 'modification' && editor) {
           if (result.selectionMode && !editor.selection.isEmpty) {
             const sel = editor.selection;
@@ -2232,16 +2260,9 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
             setTimeout(() => notifyStaleDiffs(), 150);
           }
         } else if (result.type === 'question') {
-          const answer = result.payload;
-          if (outputChannel && answer) {
-            const sep = '\u2500'.repeat(60);
-            const time = new Date().toLocaleTimeString();
-            outputChannel.appendLine(`[${time}] Q: ${transcript.trim()}`);
-            outputChannel.appendLine((answer || '').trim());
-            outputChannel.appendLine(sep);
-            outputChannel.show(true);
-          }
-          pushLog('question', (answer || '').trim().substring(0, 200));
+          const isExplicitQuickQ = /\bquick\s+question\b/i.test(transcript);
+          const implicitFallback = !isExplicitQuickQ && getSelectedAgent() === 'none';
+          showQuickAnswer(result.payload, transcript, implicitFallback);
         }
 
         if (model && result) {

@@ -1085,7 +1085,7 @@ export class Model {
     const agentName = ctx.agentBackend === 'claude' ? 'Claude Code' : ctx.agentBackend === 'codex' ? 'Codex' : null;
     const agentNote = agentName
       ? `\nIMPORTANT — An AI agent (${agentName}) is active. Prefer "agent" over "modification" for anything non-trivial. Use "modification" ONLY for small, targeted single-file edits (rename a variable, change a loop type, add a single line, remove a comment, etc.). For anything that requires thought, planning, multi-step work, new features, refactoring, or is even slightly complex, use "agent". When ambiguous, default to "agent". NEVER use "question" to answer something the agent could handle — "question" is ONLY for quick factual answers when no agent is available or the user explicitly asks a brief knowledge question like "what does this line do?".`
-      : `\nNo AI agent is active. Use "question" for non-code queries and "modification" for code changes.`;
+      : `\nIMPORTANT: No AI agent is active. The "agent" type is NOT available — NEVER output "agent", "claude", or "codex". Only "question", "command", "modification", and "terminal" are valid output types. For complex coding tasks that would normally go to an agent, use "modification" instead (output the full modified file). For knowledge/explanation questions, use "question" and provide a helpful answer.`;
 
     const system = [
       systemBase,

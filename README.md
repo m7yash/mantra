@@ -22,9 +22,9 @@ Discord: https://discord.gg/fmWCScWuUn
 3. **LLM routing (VS Code focused):** The transcript + editor context + terminal history + conversation memory is sent to **Groq** (or Cerebras). The LLM classifies the instruction and returns one of five types:
    - **command** — runs a VS Code command (75+ supported)
    - **modification** — applies a small, targeted edit to the current file (changes are highlighted in green/red)
-   - **question** — shows the answer in a separate panel (only used when no agent is available or the user says "quick question")
+   - **question** — shows the answer in a separate panel (only used when no agent is available or the user says "quick question"). When no agent is selected, a note suggests selecting one for better handling of complex requests.
    - **terminal** — translates natural language to a shell command and executes it
-   - **agent** — forwards an intelligent, context-aware prompt to the selected AI agent (Claude Code or Codex). This is the default for any non-trivial task when an agent is active.
+   - **agent** — forwards an intelligent, context-aware prompt to the selected AI agent (Claude Code or Codex). This is the default for any non-trivial task when an agent is active. When no agent is selected, agent-type requests fall back to the quick question system.
 4. **Pre-LLM shortcuts:** Common phrases like "undo", "save", "scroll down", "enter", "delete", "focus editor", "ask Claude ...", and keyboard shortcuts are handled instantly without waiting for the LLM.
 
 ---
@@ -61,7 +61,7 @@ Run **"Mantra: Start Recording"** from the Command Palette, press `Ctrl+Shift+1`
 - "quick question, what's the time complexity?"
 - "quick question, explain this line"
 
-> **Note:** Say "quick question" to always get an instant local answer, bypassing the agent and all other routing. When an agent is active and you don't say "quick question", knowledge questions are routed to the agent instead.
+> **Note:** Say "quick question" to always get an instant local answer, bypassing the agent and all other routing. When an agent is active and you don't say "quick question", knowledge questions are routed to the agent instead. When no agent is selected, all requests that would normally go to an agent are answered locally via the quick question system (with a note suggesting you select an agent).
 
 ### IDE commands (VS Code focused)
 - "undo", "redo", "save", "format document"
@@ -248,6 +248,8 @@ Mantra supports two AI agent backends: **Claude Code** (via the VS Code extensio
 
 When an agent is active, it becomes the **default destination** for any non-trivial request. You don't need to say "ask Claude" — just speak naturally and complex tasks are automatically routed to the agent. Simple edits ("change this to a while loop", "rename this variable") still go through the fast modification path.
 
+When no agent is selected (**None**), all requests that would normally be routed to an agent are handled locally — complex coding tasks become file modifications and knowledge questions are answered via the quick question system.
+
 ### Prerequisites
 
 - **Claude Code** — Install the [Claude Code VS Code extension](https://marketplace.visualstudio.com/items?itemName=anthropic.claude-code). The `claude` CLI must be in your PATH.
@@ -288,20 +290,21 @@ Mantra adds a panel to the VS Code activity bar. From the sidebar you can:
 
 - **Start / Stop listening** with a single toggle button
 - **Push to Talk** — hold the button to record, release to transcribe and process. Useful for precise, single-utterance control.
-- **Stop / Stop & Transcribe** — while recording, the button splits into two options: stop (discard audio) or stop and transcribe what's been said so far.
+- **Stop / Stop & Transcribe** (`Ctrl+Shift+2` / `Ctrl+Shift+3`) — while recording, the button splits into two options: stop (discard audio) or stop and transcribe what's been said so far.
 - **Test Microphone** — verify your mic is working with a live volume meter (no STT needed)
 - **Activity Log** — scrollable history of every transcript, command, code edit, terminal action, question, and agent interaction. Code modifications include:
   - **Show diff** — toggle to view exactly what changed (green/red highlighting)
   - **Open in tab** — open the diff in a full editor tab
-  - **Undo** — revert the specific change. Grayed out if the affected code has been modified since.
+  - **Undo / Redo** — revert or re-apply a specific change. After undoing, the button becomes "Redo this change" if the file hasn't been modified. Grayed out if the file has changed since.
 - **Focus** — quick buttons to switch between Editor, Terminal, Agent, Explorer, Search, and Source Control
 - **Settings**
   - **Agent** — choose between Claude Code and Codex (only one active at a time). Shows an install button if the selected agent's CLI is not found.
   - **LLM Provider** — Groq or Cerebras
   - **STT Provider** — Deepgram (streaming, real-time) or Aqua Voice (batch, sends full audio file)
   - **Silence Timeout** — (Aqua Voice only) how many seconds of silence before auto-transcribing. Default: 2s.
+  - **Sensitivity** — (Aqua Voice only) microphone sensitivity for silence detection: Low (noisy environments), Medium (default), High (quiet environments).
   - **Model** — select the LLM model (options update based on provider)
-  - **Microphone** — pick your input device
+  - **Microphone** — pick your input device. Changing the microphone while recording stops the current session (without transcribing) so the new mic is used on next start.
   - **Commands-Only Mode** — toggle with ON/OFF indicator (see below)
   - **All Settings** / **Keyboard Shortcuts**
 - **API Keys** — configure Deepgram, Aqua Voice, Groq, and Cerebras keys
@@ -345,9 +348,9 @@ Mantra automatically captures terminal commands and their output via VS Code she
 - **Start Recording** — `Ctrl+Shift+1`
 - **Stop Listening** — `Ctrl+Shift+2`
 - **Stop & Transcribe** — `Ctrl+Shift+3` (force-transcribe current audio then stop)
-- **Push to Talk** — `Ctrl+Shift+4` (press to start recording, press again to stop and transcribe. The sidebar button supports true hold-to-talk via mouse.)
-- **Open Settings** — `Ctrl+Shift+5`
-- **Select Microphone** — `Ctrl+Shift+6`
+- **Open Settings** — `Ctrl+Shift+4`
+- **Select Microphone** — `Ctrl+Shift+5`
+- **Push to Talk** — sidebar button only (hold to record, release to transcribe)
 - **Test Microphone** — available from sidebar or Command Palette
 - **Focus Agent Panel** — available from sidebar or Command Palette
 - **Focus Claude Code Panel** — available from Command Palette
