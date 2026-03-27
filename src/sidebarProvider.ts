@@ -29,8 +29,9 @@ export interface SidebarState {
   commandsOnly?: boolean; // commands-only mode toggle
   availableMics?: Array<{label: string, args: string}>; // enumerated microphones
   micArgs?: string;       // currently selected mic args string
-  staleDiffIds?: number[]; // diff IDs that can no longer be undone
-  undoableDiffIds?: number[]; // diff IDs that became undoable again
+  staleDiffIds?: number[]; // diff IDs that can no longer be undone/redone
+  undoableDiffIds?: number[]; // diff IDs that became undoable/redoable again
+  undoneDiffIds?: number[]; // diff IDs currently in "undone" state (show Redo instead of Undo)
 }
 
 export class MantraSidebarProvider implements vscode.WebviewViewProvider {
@@ -807,6 +808,7 @@ export class MantraSidebarProvider implements vscode.WebviewViewProvider {
     let listening = false;
     let testing = false;
     let savedMicArgs = '';
+    const undoneDiffs = new Set();
 
     const toggleBtn = document.getElementById('toggleBtn');
     const toggleLabel = document.getElementById('toggleLabel');
@@ -1116,12 +1118,18 @@ export class MantraSidebarProvider implements vscode.WebviewViewProvider {
         }
       }
 
+      // Update undone tracking first so stale/undoable handlers use correct text
+      if (msg.undoneDiffIds !== undefined) {
+        undoneDiffs.clear();
+        for (const id of msg.undoneDiffIds) undoneDiffs.add(id);
+      }
+
       if (msg.staleDiffIds !== undefined) {
         for (const staleId of msg.staleDiffIds) {
           const el = document.getElementById('undo' + staleId);
           if (el) {
             el.classList.add('stale');
-            el.textContent = 'Undo unavailable';
+            el.textContent = undoneDiffs.has(staleId) ? 'Redo unavailable' : 'Undo unavailable';
           }
         }
       }
@@ -1131,7 +1139,7 @@ export class MantraSidebarProvider implements vscode.WebviewViewProvider {
           const el = document.getElementById('undo' + uid);
           if (el) {
             el.classList.remove('stale');
-            el.textContent = 'Undo this change';
+            el.textContent = undoneDiffs.has(uid) ? 'Redo this change' : 'Undo this change';
           }
         }
       }

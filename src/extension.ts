@@ -44,7 +44,7 @@ let __mantraSessionActive = false;
 let __stopAndTranscribe = false;
 
 // ── Diff store for "Open in tab" ──
-const diffStore = new Map<number, { oldText: string; newText: string; filename: string; fullDocBefore?: string; fullDocAfter?: string }>();
+const diffStore = new Map<number, { oldText: string; newText: string; filename: string; fullDocBefore?: string; fullDocAfter?: string; undone?: boolean }>();
 let diffIdCounter = 0;
 
 function storeDiff(oldText: string, newText: string, filename: string, fullDocBefore?: string, fullDocAfter?: string): number {
@@ -80,19 +80,23 @@ function getStaleDiffIds(): number[] {
   return stale;
 }
 
-/** Notify sidebar about stale and undoable undo buttons. */
+/** Notify sidebar about stale, undoable, and undone undo/redo buttons. */
 function notifyStaleDiffs(): void {
   if (!sidebar) return;
   const stale: number[] = [];
   const undoable: number[] = [];
-  for (const [id] of diffStore) {
+  const undone: number[] = [];
+  for (const [id, data] of diffStore) {
     if (isDiffUndoable(id)) undoable.push(id);
     else stale.push(id);
+    if (data.undone) undone.push(id);
   }
   const state: any = {};
   if (stale.length > 0) state.staleDiffIds = stale;
   if (undoable.length > 0) state.undoableDiffIds = undoable;
-  if (stale.length > 0 || undoable.length > 0) sidebar.postState(state);
+  // Always send undoneDiffIds so sidebar can render correct button text (Undo vs Redo)
+  state.undoneDiffIds = undone;
+  sidebar.postState(state);
 }
 
 /** Push a log entry to the sidebar activity log. */
@@ -2003,6 +2007,10 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     sidebar?.postState({ mic: label, micArgs: args });
     vscode.window.setStatusBarMessage(`Mantra mic set: ${label}`, 3000);
     console.log(`[Mantra] Microphone changed to: ${label}`);
+    // Stop recording without transcribing so the new mic is used on next start
+    if (__mantraSessionActive) {
+      vscode.commands.executeCommand('mantra.pause');
+    }
   });
 
   // Open full diff in a VS Code tab from sidebar
@@ -2017,7 +2025,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     vscode.commands.executeCommand('vscode.diff', oldUri, newUri, `${data.filename} (before \u2194 after)`);
   });
 
-  // Undo a diff from sidebar
+  // Undo/Redo a diff from sidebar
   sidebar.onUndoDiff(async (diffId) => {
     const data = diffStore.get(diffId);
     if (!data) {
@@ -2025,33 +2033,40 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       return;
     }
 
+    const isRedo = !!data.undone;
+    const verb = isRedo ? 'redo' : 'undo';
+    const pastVerb = isRedo ? 'Redid' : 'Undid';
+
     // Find the editor for this file
     const editor = vscode.window.visibleTextEditors.find(
       e => e.document.fileName.endsWith(data.filename) || e.document.fileName.split(/[\\/]/).pop() === data.filename
     );
     if (!editor) {
       vscode.window.showWarningMessage(`File "${data.filename}" is not open in an editor.`);
-      sidebar?.postState({ staleDiffIds: [diffId] });
+      notifyStaleDiffs();
       return;
     }
 
-    // Check if the undo is still valid (compare full document snapshot)
+    // Check if the action is still valid (compare full document snapshot)
     if (!data.fullDocAfter || editor.document.getText() !== data.fullDocAfter) {
-      vscode.window.showWarningMessage('Cannot undo: the file has been modified since this change.');
-      sidebar?.postState({ staleDiffIds: [diffId] });
+      vscode.window.showWarningMessage(`Cannot ${verb}: the file has been modified since this change.`);
+      notifyStaleDiffs();
       return;
     }
 
-    // Apply the undo — restore the full document to its state before the edit
+    // Apply the undo/redo — restore the full document to its "before" state
     const restoreTo = data.fullDocBefore ?? data.oldText;
     await replaceDocumentWithHighlight(editor, restoreTo);
-    vscode.window.setStatusBarMessage(`Undid change in ${data.filename}`, 3000);
-    pushLog('command', `Undid change in ${data.filename}`);
+    vscode.window.setStatusBarMessage(`${pastVerb} change in ${data.filename}`, 3000);
+    pushLog('command', `${pastVerb} change in ${data.filename}`);
 
-    // Mark this diff as stale (it's been undone)
-    sidebar?.postState({ staleDiffIds: [diffId] });
+    // Swap before/after snapshots so the reverse operation becomes available
+    const tmp = data.fullDocBefore;
+    data.fullDocBefore = data.fullDocAfter;
+    data.fullDocAfter = tmp;
+    data.undone = !data.undone;
 
-    // Check if any other diffs are now stale
+    // Re-evaluate all diffs (the file content just changed)
     notifyStaleDiffs();
   });
 
