@@ -292,14 +292,23 @@ function makeUnifiedDiff(oldText: string, newText: string, filename: string): st
   return `--- ${filename}\n+++ ${filename}\n${hunks.join('\n')}`;
 }
 
-/** Save session context (memory + terminal history) to a temp file and reference it.
- *  The prompt itself stays as the user's raw words — context is separate. */
-function buildClaudePrompt(prompt: string): string {
+/** Build the prompt sent to the agent.
+ *  The prompt is the user's raw transcript. Context (an explanation of Mantra,
+ *  session memory, and terminal history) is written to a temp file and referenced. */
+function buildAgentPrompt(transcript: string): string {
   const fs = require('fs');
   const os = require('os');
   const path = require('path');
 
   const sections: string[] = [];
+
+  // Explain what Mantra is and what's happening
+  sections.push('=== About This Prompt ===');
+  sections.push('This prompt was sent by Mantra, a VS Code voice-control extension.');
+  sections.push('The user spoke the words below and Mantra routed them to you.');
+  sections.push('The transcript is their raw speech — interpret it in the context of');
+  sections.push('the session memory and terminal history provided here.');
+  sections.push('');
 
   // Include conversation memory if available
   const memory = model?.getMemory?.();
@@ -317,14 +326,14 @@ function buildClaudePrompt(prompt: string): string {
     sections.push('');
   }
 
-  if (sections.length === 0) return prompt;
+  if (sections.length === 1) return transcript; // only the header, no real context
 
   try {
     const tmpFile = path.join(os.tmpdir(), 'mantra-context.txt');
     fs.writeFileSync(tmpFile, sections.join('\n'), 'utf8');
-    return prompt + `\n\nFor additional context (session memory and terminal history), see: ${tmpFile}`;
+    return transcript + `\n\nFor additional context, see: ${tmpFile}`;
   } catch {
-    return prompt;
+    return transcript;
   }
 }
 
@@ -1418,7 +1427,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
                     typeInSelectedAgent(prompt);
                     pushLog(agent as LogEntry['kind'], prompt);
                   } else {
-                    await sendToSelectedAgent(buildClaudePrompt(prompt));
+                    await sendToSelectedAgent(buildAgentPrompt(prompt));
                     pushLog(agent as LogEntry['kind'], prompt);
                   }
                   return;
@@ -1519,7 +1528,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
                   typeInSelectedAgent(prompt);
                   pushLog(agent, prompt);
                 } else {
-                  await sendToSelectedAgent(buildClaudePrompt(prompt));
+                  await sendToSelectedAgent(buildAgentPrompt(prompt));
                   pushLog(agent, prompt);
                 }
                 return;
@@ -1671,18 +1680,18 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
             }
           } else if (result.type === 'claude' || result.type === 'codex' || result.type === 'agent') {
             // All agent types route to the currently selected agent
-            const prompt = (result.payload || '').trim();
-            if (prompt) {
+            // Send the user's raw transcript, not the LLM-expanded payload
+            if (transcript.trim()) {
               const agent = getSelectedAgent();
               if (agent === 'none') {
                 // No agent selected — answer as quick question instead (with note)
                 showQuickAnswer(result.payload, transcript, true);
               } else if (isAgentModeActive()) {
-                typeInSelectedAgent(prompt);
-                pushLog(agent, prompt);
+                typeInSelectedAgent(transcript);
+                pushLog(agent, transcript);
               } else {
-                await sendToSelectedAgent(buildClaudePrompt(prompt));
-                pushLog(agent, prompt);
+                await sendToSelectedAgent(buildAgentPrompt(transcript));
+                pushLog(agent, transcript);
               }
             }
           } else if (result.type === 'command') {
@@ -1750,7 +1759,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
               if (isAgentModeActive()) {
                 typeInSelectedAgent(transcript);
               } else {
-                await sendToSelectedAgent(buildClaudePrompt(transcript));
+                await sendToSelectedAgent(buildAgentPrompt(transcript));
               }
               pushLog(agent as LogEntry['kind'], transcript);
             } else {
@@ -2220,17 +2229,17 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
             }
           }
         } else if (result.type === 'claude' || result.type === 'codex' || result.type === 'agent') {
-          const prompt = (result.payload || '').trim();
-          if (prompt) {
+          // Send the user's raw transcript, not the LLM-expanded payload
+          if (transcript.trim()) {
             const agent = getSelectedAgent();
             if (agent === 'none') {
               showQuickAnswer(result.payload, transcript, true);
             } else if (isAgentModeActive()) {
-              typeInSelectedAgent(prompt);
-              pushLog(agent, prompt);
+              typeInSelectedAgent(transcript);
+              pushLog(agent, transcript);
             } else {
-              await sendToSelectedAgent(buildClaudePrompt(prompt));
-              pushLog(agent, prompt);
+              await sendToSelectedAgent(buildAgentPrompt(transcript));
+              pushLog(agent, transcript);
             }
           }
         } else if (result.type === 'command') {
