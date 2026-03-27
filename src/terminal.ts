@@ -28,7 +28,7 @@ export function typeInTerminal(command: string): void {
  */
 export function executeInTerminal(command: string): void {
   const terminal = getOrCreateTerminal();
-  terminal.show(true);
+  terminal.show(false); // false = focus the terminal so user sees it
   terminal.sendText(command, true); // true = add newline (execute)
   vscode.window.setStatusBarMessage(`Executing: ${command}`, 3000);
 }

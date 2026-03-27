@@ -99,9 +99,18 @@ function notifyStaleDiffs(): void {
   sidebar.postState(state);
 }
 
-/** Push a log entry to the sidebar activity log. */
+/** Push a log entry to the sidebar activity log.
+ *  Deduplicates consecutive entries with the same kind+text within 2 seconds. */
+let __lastLogKind = '';
+let __lastLogText = '';
+let __lastLogTime = 0;
 function pushLog(kind: LogEntry['kind'], text: string, diff?: string, diffId?: number): void {
   if (!sidebar) return;
+  const now = Date.now();
+  if (kind === __lastLogKind && text === __lastLogText && now - __lastLogTime < 2000 && !diff) return;
+  __lastLogKind = kind;
+  __lastLogText = text;
+  __lastLogTime = now;
   const time = new Date().toLocaleTimeString('en-US', { hour12: false, hour: '2-digit', minute: '2-digit', second: '2-digit' });
   sidebar.pushLog({ time, kind, text, diff, diffId });
 }
@@ -297,8 +306,12 @@ function makeUnifiedDiff(oldText: string, newText: string, filename: string): st
 
 /** Build the prompt sent to the agent.
  *  The prompt is the user's raw transcript. Context (an explanation of Mantra,
- *  session memory, and terminal history) is written to a temp file and referenced. */
+ *  session memory, and terminal history) is written to a temp file and referenced.
+ *  Respects the "Send Context to AI" toggle. */
 function buildAgentPrompt(transcript: string): string {
+  const cfg = vscode.workspace.getConfiguration('mantra');
+  if (!cfg.get<boolean>('sendContext', true)) return transcript;
+
   const fs = require('fs');
   const os = require('os');
   const path = require('path');
@@ -307,10 +320,11 @@ function buildAgentPrompt(transcript: string): string {
 
   // Explain what Mantra is and what's happening
   sections.push('=== About This Prompt ===');
-  sections.push('This prompt was sent by Mantra, a VS Code voice-control extension.');
-  sections.push('The user spoke the words below and Mantra routed them to you.');
-  sections.push('The transcript is their raw speech — interpret it in the context of');
-  sections.push('the session memory and terminal history provided here.');
+  sections.push('This prompt was sent by Mantra, a VS Code voice-coding extension that listens');
+  sections.push('to the user\'s voice and routes their speech to you. The transcript below is');
+  sections.push('exactly what the user said (via speech-to-text). Treat it as a natural-language');
+  sections.push('request and act on it. The session memory and terminal history below provide');
+  sections.push('additional context about what the user has been working on.');
   sections.push('');
 
   // Include conversation memory if available
@@ -318,23 +332,27 @@ function buildAgentPrompt(transcript: string): string {
   if (memory) {
     sections.push('=== Session Memory ===');
     sections.push(memory);
-    sections.push('');
+  } else {
+    sections.push('=== Session Memory ===');
+    sections.push('(No session memory yet — this is a fresh session.)');
   }
+  sections.push('');
 
   // Include terminal history if available
   const history = getFullTerminalHistory();
   if (history) {
     sections.push('=== Terminal History ===');
     sections.push(history);
-    sections.push('');
+  } else {
+    sections.push('=== Terminal History ===');
+    sections.push('(No terminal commands have been run yet.)');
   }
-
-  if (sections.length === 1) return transcript; // only the header, no real context
+  sections.push('');
 
   try {
     const tmpFile = path.join(os.tmpdir(), 'mantra-context.txt');
     fs.writeFileSync(tmpFile, sections.join('\n'), 'utf8');
-    return transcript + `\n\nFor additional context, see: ${tmpFile}`;
+    return transcript + `\n\nFor additional context (session memory, terminal history), see: ${tmpFile}`;
   } catch {
     return transcript;
   }
@@ -1125,12 +1143,16 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         e.affectsConfiguration('mantra.sensitivity') ||
         e.affectsConfiguration('mantra.reasoningEffort') ||
         e.affectsConfiguration('mantra.agentBackend') ||
-        e.affectsConfiguration('mantra.commandsOnly')
+        e.affectsConfiguration('mantra.commandsOnly') ||
+        e.affectsConfiguration('mantra.sendContext')
       ) {
         syncFromSettings();
         const cfg = vscode.workspace.getConfiguration('mantra');
         if (e.affectsConfiguration('mantra.commandsOnly')) {
           sidebar?.postState({ commandsOnly: cfg.get<boolean>('commandsOnly', false) });
+        }
+        if (e.affectsConfiguration('mantra.sendContext')) {
+          sidebar?.postState({ sendContext: cfg.get<boolean>('sendContext', true) });
         }
         if (model) {
           if (e.affectsConfiguration('mantra.cerebrasApiKey')) {
@@ -1427,7 +1449,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
                     vscode.window.showWarningMessage('No agent selected.');
                     pushLog('error', 'No agent selected');
                   } else if (isAgentModeActive()) {
-                    typeInSelectedAgent(prompt);
+                    typeInSelectedAgent(buildAgentPrompt(prompt));
                     pushLog(agent as LogEntry['kind'], prompt);
                   } else {
                     await sendToSelectedAgent(buildAgentPrompt(prompt));
@@ -1528,7 +1550,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
               if (prompt) {
                 const agent = getSelectedAgent() as 'claude' | 'codex';
                 if (isAgentModeActive()) {
-                  typeInSelectedAgent(prompt);
+                  typeInSelectedAgent(buildAgentPrompt(prompt));
                   pushLog(agent, prompt);
                 } else {
                   await sendToSelectedAgent(buildAgentPrompt(prompt));
@@ -1690,7 +1712,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
                 // No agent selected — answer as quick question instead (with note)
                 showQuickAnswer(result.payload, transcript, true);
               } else if (isAgentModeActive()) {
-                typeInSelectedAgent(transcript);
+                typeInSelectedAgent(buildAgentPrompt(transcript));
                 pushLog(agent, transcript);
               } else {
                 await sendToSelectedAgent(buildAgentPrompt(transcript));
@@ -1760,7 +1782,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
             if (!isQuickQuestion && agent !== 'none') {
               // Route to the selected agent
               if (isAgentModeActive()) {
-                typeInSelectedAgent(transcript);
+                typeInSelectedAgent(buildAgentPrompt(transcript));
               } else {
                 await sendToSelectedAgent(buildAgentPrompt(transcript));
               }
@@ -1861,6 +1883,18 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       );
     });
 
+  const toggleSendContextDisposable = vscode.commands.registerCommand('mantra.toggleSendContext',
+    async () => {
+      const cfg = vscode.workspace.getConfiguration('mantra');
+      const current = cfg.get<boolean>('sendContext', true);
+      await cfg.update('sendContext', !current, vscode.ConfigurationTarget.Global);
+      sidebar?.postState({ sendContext: !current });
+      vscode.window.setStatusBarMessage(
+        `Mantra: send context ${!current ? 'enabled' : 'disabled'}`,
+        2000
+      );
+    });
+
   const selectMicDisposable = vscode.commands.registerCommand('mantra.selectMicrophone', async () => {
     const mics = enumerateMicrophones();
 
@@ -1886,6 +1920,10 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     await cfg.update('microphoneInput', pick.args, vscode.ConfigurationTarget.Global);
     vscode.window.setStatusBarMessage(`Mantra mic set: ${pick.label}`, 3000);
     sidebar?.postState({ mic: pick.label, micArgs: pick.args });
+    // Stop recording without transcribing so the new mic is used on next start
+    if (__mantraSessionActive) {
+      vscode.commands.executeCommand('mantra.pause');
+    }
   });
 
   const openSettingsCmd = vscode.commands.registerCommand(
@@ -2238,7 +2276,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
             if (agent === 'none') {
               showQuickAnswer(result.payload, transcript, true);
             } else if (isAgentModeActive()) {
-              typeInSelectedAgent(transcript);
+              typeInSelectedAgent(buildAgentPrompt(transcript));
               pushLog(agent, transcript);
             } else {
               await sendToSelectedAgent(buildAgentPrompt(transcript));
@@ -2353,6 +2391,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     const sensitivity = cfg.get<string>('sensitivity') || 'medium';
     const installed = agent === 'claude' ? true : checkCliInstalled('codex');
     const cmdOnly = cfg.get<boolean>('commandsOnly', false);
+    const sendCtx = cfg.get<boolean>('sendContext', true);
     const micArgs = cfg.get<string>('microphoneInput') || '';
     const availableMics = enumerateMicrophones();
     sidebar.postState({
@@ -2366,6 +2405,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       silenceTimeout,
       sensitivity,
       commandsOnly: cmdOnly,
+      sendContext: sendCtx,
       availableMics,
       micArgs,
     });
@@ -2398,6 +2438,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     pttStopDisposable,
     configurePromptDisposable,
     toggleCommandsOnlyDisposable,
+    toggleSendContextDisposable,
     selectMicDisposable,
     openSettingsCmd,
     editCerebrasCmd,

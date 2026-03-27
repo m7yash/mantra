@@ -110,6 +110,10 @@
       {
         "command": "mantra.focusAgent",
         "title": "Mantra: Focus Agent Panel"
+      },
+      {
+        "command": "mantra.toggleSendContext",
+        "title": "Mantra: Toggle Send Context to AI"
       }
     ],
     "keybindings": [
@@ -235,6 +239,11 @@
           ],
           "default": "medium",
           "description": "Microphone sensitivity for silence detection. Low = requires louder speech (noisy environments), High = picks up quieter speech (quiet environments)."
+        },
+        "mantra.sendContext": {
+          "type": "boolean",
+          "default": true,
+          "description": "Include session memory and terminal history as context when sending prompts to the AI agent."
         },
         "mantra.reasoningEffort": {
           "type": "string",

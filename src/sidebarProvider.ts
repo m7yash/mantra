@@ -27,6 +27,7 @@ export interface SidebarState {
   agentInstalled?: boolean; // whether selected agent CLI is installed
   llmProvider?: string;   // 'groq' | 'cerebras'
   commandsOnly?: boolean; // commands-only mode toggle
+  sendContext?: boolean;  // send context to AI toggle
   availableMics?: Array<{label: string, args: string}>; // enumerated microphones
   micArgs?: string;       // currently selected mic args string
   staleDiffIds?: number[]; // diff IDs that can no longer be undone/redone
@@ -752,6 +753,11 @@ export class MantraSidebarProvider implements vscode.WebviewViewProvider {
     <span class="row-label" id="cmdOnlyLabel">Commands-Only Mode</span>
     <span class="row-hint" id="cmdOnlyHint">OFF</span>
   </button>
+  <button class="row" data-cmd="mantra.toggleSendContext" id="sendCtxBtn">
+    <span class="row-icon">&#128206;</span>
+    <span class="row-label">Send Context to AI</span>
+    <span class="row-hint" id="sendCtxHint">ON</span>
+  </button>
   <button class="row" data-cmd="mantra.openSettings">
     <span class="row-icon">&#9881;</span>
     <span class="row-label">All Settings</span>
@@ -843,6 +849,7 @@ export class MantraSidebarProvider implements vscode.WebviewViewProvider {
     const silenceWrap = document.getElementById('silenceWrap');
     const focusAgentLabel = document.getElementById('focusAgentLabel');
     const cmdOnlyHint = document.getElementById('cmdOnlyHint');
+    const sendCtxHint = document.getElementById('sendCtxHint');
     const micSelect = document.getElementById('micSelect');
 
     toggleBtn.addEventListener('click', () => {
@@ -1086,6 +1093,13 @@ export class MantraSidebarProvider implements vscode.WebviewViewProvider {
       if (msg.commandsOnly !== undefined) {
         cmdOnlyHint.textContent = msg.commandsOnly ? 'ON' : 'OFF';
         cmdOnlyHint.style.color = msg.commandsOnly
+          ? 'var(--vscode-charts-green, #89d185)'
+          : 'var(--vscode-descriptionForeground)';
+      }
+
+      if (msg.sendContext !== undefined) {
+        sendCtxHint.textContent = msg.sendContext ? 'ON' : 'OFF';
+        sendCtxHint.style.color = msg.sendContext
           ? 'var(--vscode-charts-green, #89d185)'
           : 'var(--vscode-descriptionForeground)';
       }

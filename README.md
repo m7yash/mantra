@@ -306,6 +306,7 @@ Mantra adds a panel to the VS Code activity bar. From the sidebar you can:
   - **Model** — select the LLM model (options update based on provider)
   - **Microphone** — pick your input device. Changing the microphone while recording stops the current session (without transcribing) so the new mic is used on next start.
   - **Commands-Only Mode** — toggle with ON/OFF indicator (see below)
+  - **Send Context to AI** — toggle ON/OFF. When enabled (default), session memory and terminal history are written to a temp file and referenced in prompts sent to the agent. Turn off to send only the raw transcript.
   - **All Settings** / **Keyboard Shortcuts**
 - **API Keys** — configure Deepgram, Aqua Voice, Groq, and Cerebras keys
 - **Session Memory** — view and edit the running session context that the LLM uses. Edits take effect immediately.
@@ -372,6 +373,7 @@ Open **Settings > Extensions > Mantra** to adjust:
 - **Prompt** — Customize the LLM system prompt (also editable in the sidebar).
 - **Memory Manager Prompt** — Customize the prompt that summarizes session context (also editable in the sidebar).
 - **Commands Only** — Bypass the LLM entirely. Only pre-mapped commands and text operations work.
+- **Send Context to AI** — Include session memory and terminal history when sending prompts to the AI agent. Default: on.
 - **Microphone Input** — Set via Command Palette > "Mantra: Select Microphone". Advanced users can paste raw FFmpeg input args.
 
 ---
