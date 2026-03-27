@@ -1020,6 +1020,7 @@ export class Model {
       editor?: vscode.TextEditor;
       terminalHistory?: string;
       agentBackend?: 'claude' | 'codex' | 'none';
+      activityLog?: string;
     }
   ): Promise<RouteResult> {
     console.log('Entering decide function')
@@ -1096,10 +1097,10 @@ export class Model {
     ].join('\n');
     const parts: string[] = [];
 
-    // Include conversation memory if available
-    if (this.memory) {
-      parts.push('Conversation memory (context from earlier in this session):');
-      parts.push(this.memory);
+    // Include activity log if available (recent session history)
+    if (ctx.activityLog) {
+      parts.push('Activity log (recent session history):');
+      parts.push(ctx.activityLog);
       parts.push('');
     }
 

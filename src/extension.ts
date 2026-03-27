@@ -304,8 +304,15 @@ function makeUnifiedDiff(oldText: string, newText: string, filename: string): st
   return `--- ${filename}\n+++ ${filename}\n${hunks.join('\n')}`;
 }
 
+/** Format the activity log as a string for LLM context. */
+function getActivityLogText(): string {
+  const logs = sidebar?.getLogs() || [];
+  if (logs.length === 0) return '';
+  return logs.map(e => `[${e.time}] ${e.kind}: ${e.text}`).join('\n');
+}
+
 /** Whether we've already sent the full context explanation to the agent in this session.
- *  After the first send, follow-ups just remind the agent to re-check the context file. */
+ *  After the first send, follow-ups just send the raw transcript only. */
 let __agentContextSent = false;
 
 /** Write the context file (activity log + terminal history) and return the path, or '' on failure. */
@@ -370,7 +377,9 @@ function buildAgentPrompt(transcript: string): string {
       `For context (activity log, terminal history), see: ${ctxFile}\n` +
       'This file is updated before every message — re-read it each time you receive a new prompt from Mantra.';
   } else {
-    return transcript + `\n\n(Mantra context updated: ${ctxFile})`;
+    // Follow-ups: just send the raw transcript. The context file is still updated
+    // but we don't remind the agent — it was told to re-check on the first message.
+    return transcript;
   }
 }
 
@@ -1668,6 +1677,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
               editor: editor || undefined,
               terminalHistory: termHistory || undefined,
               agentBackend: isQuickQ ? 'none' : getSelectedAgent(),
+              activityLog: getActivityLogText() || undefined,
             });
           } catch (err: any) {
             const status = (err && (err.status || err.code)) ?? 0;
@@ -2245,6 +2255,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
           editorContext, commands: commandsList, filename: editor?.document.fileName, editor: editor ?? undefined,
           terminalHistory: termHistory || undefined,
           agentBackend: isQuickQ ? 'none' : getSelectedAgent(),
+          activityLog: getActivityLogText() || undefined,
         });
 
         if (!result) return;
