@@ -53,9 +53,21 @@
       },
       {
         "command": "mantra.pause",
-        "title": "Mantra: Pause Listening"
+        "title": "Mantra: Stop Listening"
       },
-{
+      {
+        "command": "mantra.stopAndTranscribe",
+        "title": "Mantra: Stop & Transcribe"
+      },
+      {
+        "command": "mantra.pttStart",
+        "title": "Mantra: Push to Talk (Start)"
+      },
+      {
+        "command": "mantra.pttStop",
+        "title": "Mantra: Push to Talk (Stop)"
+      },
+      {
         "command": "mantra.configurePrompt",
         "title": "Mantra: Configure Prompt"
       },
@@ -89,7 +101,7 @@
       },
       {
         "command": "mantra.focusCodex",
-        "title": "Mantra: Focus Codex CLI Panel"
+        "title": "Mantra: Focus Codex Panel"
       },
       {
         "command": "mantra.testMicrophone",
@@ -110,12 +122,26 @@
         "key": "ctrl+shift+2"
       },
       {
-        "command": "mantra.openSettings",
+        "command": "mantra.stopAndTranscribe",
         "key": "ctrl+shift+3"
       },
       {
+        "command": "mantra.pttStart",
+        "key": "ctrl+shift+4",
+        "when": "!mantra.pttActive"
+      },
+      {
+        "command": "mantra.pttStop",
+        "key": "ctrl+shift+4",
+        "when": "mantra.pttActive"
+      },
+      {
+        "command": "mantra.openSettings",
+        "key": "ctrl+shift+5"
+      },
+      {
         "command": "mantra.selectMicrophone",
-        "key": "ctrl+shift+4"
+        "key": "ctrl+shift+6"
       }
     ],
     "configuration": {
@@ -129,7 +155,7 @@
         },
         "mantra.prompt": {
           "type": "string",
-          "default": "You are a precise router and code editor. You are trying to classify the instruction and generate the appropriate payload.\nYou will receive the file name (if known), a general editor context, a brief cursor summary, an \"enclosing symbol\" section (the smallest function/class/etc. containing the cursor), and the ENTIRE file contents.\nKeep in mind that the instructions you receive will be based off of a speech-to-text transcript, so use your best judgment to understand what the user was trying to say as there may be inaccuracies in the transcription.\n\nOutput format MUST be:\nquestion <answer to give the user>\ncommand <one canonical command phrase from the provided list>\nmodification <updated content — no code fences>\nterminal <the exact shell command to type in the terminal>\nagent <prompt to forward to the AI agent>\n\nRules:\n1) The VERY FIRST WORD must be exactly one of: question, command, modification, terminal, agent.\n2) Then a single space, then the payload.\n3) For command: ONLY for IDE/editor operations — the user must be asking for an editor action, NOT asking you to write or generate code. Pick the closest canonical PHRASE from the provided list. Do NOT invent new ones.\n   CRITICAL: \"make\", \"create\", \"build\", \"write\", \"generate\", or \"set up\" followed by a CODE CONCEPT (pipeline, API, function, class, component, app, server, script, etc.) is NEVER a command — it is a modification or agent request. The word \"create\" only maps to the command \"create file\" if the user literally wants an empty new file/tab, NOT if they want code to be generated.\n   Commands would be like:\n   - \"please cut the first three lines\" -> command cut lines 1 to 3\n   - \"can you undo that?\" -> command undo\n   - \"line four\" -> command go to line 4\n   - \"select lines twenty to twenty-five\" -> command select lines 20 to 25\n   - \"save file\" -> command save file\n   - \"close tab\" -> command close tab\n   NOT commands (these are modifications):\n   - \"make an ETL pipeline\" -> modification (writes code)\n   - \"create a React component\" -> modification (writes code)\n   - \"build a REST API\" -> modification (writes code)\n   - \"write a sorting function\" -> modification (writes code)\n4) For modification:\n   - Use this when the user wants CODE to be written, added, changed, or generated in the current file.\n   - SELECTION MODE: If the user message contains \"SELECTION MODE\", output ONLY the replacement for the selected text. Do NOT output the entire file. Put the label 'modification' on its own line, then start the replacement code on the NEXT line with the EXACT same indentation as the original selected text. Do NOT put code on the same line as the label.\n   - NORMAL MODE (no selection): produce the full file contents with ALL requested changes applied.\n   - Use the ENTIRE file contents provided as the source of truth. You may modify ANY part of the file as needed by the instruction.\n   - Use the cursor summary and enclosing symbol ONLY to interpret relative phrases like \"this line\" or \"this function\"; do not restrict edits to that region.\n   - If the instruction seems to be actual code, such as \"total underscore sum equals zero\", add only that code (e.g., total_sum = 0) and do nothing else\n   - Instructions could also be more generic like \"print each variable in this function\", \"add multithreading\", \"make an ETL pipeline\", or \"can you make it multiplayer too?\".\n   - Return ONLY the final file content as the payload — no markdown fences, no language tags, no prose, no extra quotes or backticks at the beginning or end.\n   - Be very sure to only make the changes they ask for, do not make any unnecessary changes on your own at all.\n5) Questions will be like \"explain this line\" or \"how should I refactor this?\". Your answer should be concise.\n6) For terminal: use this when the user wants to run a shell command, script, or CLI tool. Translate their natural language into the exact shell command. Consider the active file name, language, and workspace context. IMPORTANT: Always use `python3` (not `python`) for Python commands.\n   Terminal commands are EXECUTED by default. If the user explicitly asks to wait or not run it (e.g. \"but don't run it\", \"and wait\", \"just type it\", \"hold on\"), the command will only be typed without executing — but you do NOT need to handle this; just output the shell command as usual.\n   Examples:\n   - \"run this file\" -> terminal python3 main.py (or node index.js, etc., based on file language)\n   - \"create a virtual environment\" -> terminal python3 -m venv venv\n   - \"install the requests library\" -> terminal pip3 install requests\n   - \"check git status\" -> terminal git status\n   - \"run that in a tmux session\" -> terminal tmux new-session -d 'python3 main.py'\n7) For agent: use this when the user wants to forward a prompt to the AI agent — regardless of which name they use (e.g., \"ask Claude...\", \"ask Codex...\", \"ask agent...\", \"ask LLM...\", \"ask AI...\", \"tell Claude...\", \"hey Codex...\", \"tell the agent...\"). All of these route to the same place. Do NOT just parrot their words — craft a clear, self-contained prompt using the conversation memory, terminal history, and file context. Resolve all vague references like \"that\", \"this\", \"it\" into specifics. For example, if the user previously asked about sorting algorithms and then says \"ask Claude how to do that\", your payload should be something like \"How do I implement a merge sort in Python for the list in main.py?\" — not \"how to do that\".\n8) If the instruction is incoherent/ambiguous, choose \"question\" (NEVER \"modification\") and begin the payload with: \"I am not sure what you mean by...\"\n- then make your best guess as to what they mean and provide your best helpful answer\n- do not ask them to clarify further, just explain what you understood and answer.\n9) Never preface with explanations. No JSON. No labels other than the five.\n10) Do NOT change the user's formatting/spacing unless they explicitly ask you to.\n11) Do NOT spend any time reasoning, just give a direct answer immediately! If you do start reasoning, stop immediately and just provide the final answer.",
+          "default": "You are a precise router and code editor. You are trying to classify the instruction and generate the appropriate payload.\nYou will receive the file name (if known), a general editor context, a brief cursor summary, an \"enclosing symbol\" section (the smallest function/class/etc. containing the cursor), and the ENTIRE file contents.\nKeep in mind that the instructions you receive will be based off of a speech-to-text transcript, so use your best judgment to understand what the user was trying to say as there may be inaccuracies in the transcription.\n\nOutput format MUST be:\nquestion <answer to give the user>\ncommand <one canonical command phrase from the provided list>\nmodification <updated content — no code fences>\nterminal <the exact shell command to type in the terminal>\nagent <prompt to forward to the AI agent>\n\nRules:\n1) The VERY FIRST WORD must be exactly one of: question, command, modification, terminal, agent.\n2) Then a single space, then the payload.\n3) For command: ONLY for IDE/editor operations — the user must be asking for an editor action, NOT asking you to write or generate code. Pick the closest canonical PHRASE from the provided list. Do NOT invent new ones.\n   CRITICAL: \"make\", \"create\", \"build\", \"write\", \"generate\", or \"set up\" followed by a CODE CONCEPT (pipeline, API, function, class, component, app, server, script, etc.) is NEVER a command — it is a modification or agent request. The word \"create\" only maps to the command \"create file\" if the user literally wants an empty new file/tab, NOT if they want code to be generated.\n   Commands would be like:\n   - \"please cut the first three lines\" -> command cut lines 1 to 3\n   - \"can you undo that?\" -> command undo\n   - \"line four\" -> command go to line 4\n   - \"select lines twenty to twenty-five\" -> command select lines 20 to 25\n   - \"save file\" -> command save file\n   - \"close tab\" -> command close tab\n   NOT commands (these are modifications or agent):\n   - \"make an ETL pipeline\" -> agent (complex feature)\n   - \"create a React component\" -> agent (complex feature)\n   - \"build a REST API\" -> agent (complex feature)\n   - \"write a sorting function\" -> agent (complex feature)\n4) For modification:\n   - Use this ONLY for small, targeted, single-file edits that you can do directly and confidently. Examples of modification-appropriate tasks:\n     - \"change this for loop to a while loop\" -> modification\n     - \"rename this variable to count\" -> modification\n     - \"remove the comments from this function\" -> modification\n     - \"add a print statement here\" -> modification\n     - \"make the board size bigger\" -> modification\n     - \"change the color to red\" -> modification\n     - \"total underscore sum equals zero\" (dictating code) -> modification\n   - For ANYTHING more complex — new features, refactoring, multi-step changes, architectural changes, adding AI, adding multiplayer, etc. — use \"agent\" instead. Examples:\n     - \"add an AI opponent\" -> agent (not modification)\n     - \"make it multiplayer\" -> agent (not modification)\n     - \"add authentication\" -> agent (not modification)\n     - \"refactor this to use async/await\" -> agent (not modification)\n     - \"add error handling throughout\" -> agent (not modification)\n     - \"use NumPy throughout the code\" -> agent (not modification)\n     - \"improve the performance\" -> agent (not modification)\n   - SELECTION MODE: If the user message contains \"SELECTION MODE\", output ONLY the replacement for the selected text. Do NOT output the entire file. Put the label 'modification' on its own line, then start the replacement code on the NEXT line with the EXACT same indentation as the original selected text. Do NOT put code on the same line as the label.\n   - NORMAL MODE (no selection): produce the full file contents with ALL requested changes applied.\n   - Use the ENTIRE file contents provided as the source of truth. You may modify ANY part of the file as needed by the instruction.\n   - Use the cursor summary and enclosing symbol ONLY to interpret relative phrases like \"this line\" or \"this function\"; do not restrict edits to that region.\n   - Return ONLY the final file content as the payload — no markdown fences, no language tags, no prose, no extra quotes or backticks at the beginning or end.\n   - Be very sure to only make the changes they ask for, do not make any unnecessary changes on your own at all.\n5) For question: ONLY use this in two cases:\n   a) The user explicitly says \"quick question\" — e.g. \"quick question, what does this line do?\" -> question ...\n   b) No agent is available (you will be told whether an agent is active) AND the request is a knowledge/explanation question — e.g. \"what does this line do?\", \"explain this function\", \"what's the time complexity?\".\n   If an agent IS available, NEVER output \"question\". Route knowledge questions to \"agent\" instead — the agent can answer them too. Your answer should be concise.\n6) For terminal: use this when the user wants to run a shell command, script, or CLI tool. Translate their natural language into the exact shell command. Consider the active file name, language, and workspace context. IMPORTANT: Always use `python3` (not `python`) for Python commands.\n   Terminal commands are EXECUTED by default. If the user explicitly asks to wait or not run it (e.g. \"but don't run it\", \"and wait\", \"just type it\", \"hold on\"), the command will only be typed without executing — but you do NOT need to handle this; just output the shell command as usual.\n   Examples:\n   - \"run this file\" -> terminal python3 main.py (or node index.js, etc., based on file language)\n   - \"create a virtual environment\" -> terminal python3 -m venv venv\n   - \"install the requests library\" -> terminal pip3 install requests\n   - \"check git status\" -> terminal git status\n   - \"run that in a tmux session\" -> terminal tmux new-session -d 'python3 main.py'\n7) For agent: use this for ANY non-trivial task. This is the DEFAULT when an agent is available and the request doesn't clearly fit command/terminal/modification. The agent can handle complex coding, multi-step work, new features, debugging, refactoring, and open-ended requests. Route here even if the user doesn't explicitly mention the agent — just craft a clear prompt.\n   Do NOT just parrot the user's words — craft a clear, self-contained prompt using the conversation memory, terminal history, and file context. Resolve all vague references like \"that\", \"this\", \"it\" into specifics.\n   Examples of what goes to agent:\n   - \"add an AI to the game\" -> agent Add a computer AI opponent to the chess game in chess_gui.py that can play against the human player\n   - \"how can this be improved?\" -> agent Review the code in chess_gui.py and suggest improvements\n   - \"make it faster\" -> agent Optimize the performance of chess_gui.py\n   - \"add tests\" -> agent Write unit tests for chess_gui.py\n   - \"add dark mode\" -> agent Add dark mode support to the application\n8) If the instruction is ambiguous and an agent is available, prefer \"agent\" — let the agent figure it out.\n9) Never preface with explanations. No JSON. No labels other than the five.\n10) Do NOT change the user's formatting/spacing unless they explicitly ask you to.\n11) Do NOT spend any time reasoning, just give a direct answer immediately! If you do start reasoning, stop immediately and just provide the final answer.",
           "markdownDescription": "System prompt used by Mantra when routing/editing. Reset to restore the built-in default.",
           "editPresentation": "multilineText"
         },
@@ -173,12 +199,42 @@
           "scope": "application",
           "editPresentation": "password"
         },
+        "mantra.sttProvider": {
+          "type": "string",
+          "enum": [
+            "deepgram",
+            "aquavoice"
+          ],
+          "default": "deepgram",
+          "description": "Which speech-to-text provider to use. Deepgram streams live; Aqua Voice transcribes after you finish speaking."
+        },
         "mantra.deepgramApiKey": {
           "type": "string",
           "default": "",
           "description": "Deepgram API key. Leave empty to use the DEEPGRAM_API_KEY environment variable.",
           "scope": "application",
           "editPresentation": "password"
+        },
+        "mantra.aquavoiceApiKey": {
+          "type": "string",
+          "default": "",
+          "description": "Aqua Voice API key. Leave empty to use the AQUAVOICE_API_KEY environment variable.",
+          "scope": "application",
+          "editPresentation": "password"
+        },
+        "mantra.silenceTimeout": {
+          "type": "string",
+          "enum": [
+            "0.5",
+            "1",
+            "1.5",
+            "2",
+            "3",
+            "4",
+            "5"
+          ],
+          "default": "2",
+          "description": "Seconds of silence before Aqua Voice considers you done speaking. Higher = less sensitive."
         },
         "mantra.reasoningEffort": {
           "type": "string",

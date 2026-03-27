@@ -32,6 +32,7 @@ let model: Model | null = null;
 let cerebrasApiKey: string = '';
 let groqApiKey: string = '';
 let deepgramApiKey: string = '';
+let aquavoiceApiKey: string = '';
 let outputChannel: vscode.OutputChannel | null = null;
 let sidebar: MantraSidebarProvider | null = null;
 
@@ -39,20 +40,59 @@ let sidebar: MantraSidebarProvider | null = null;
 let __mantraPaused = false;
 // Guard against double-entry into the listening loop
 let __mantraSessionActive = false;
+// When set, the current recording should be force-transcribed then paused
+let __stopAndTranscribe = false;
 
 // ── Diff store for "Open in tab" ──
-const diffStore = new Map<number, { oldText: string; newText: string; filename: string }>();
+const diffStore = new Map<number, { oldText: string; newText: string; filename: string; fullDocBefore?: string; fullDocAfter?: string }>();
 let diffIdCounter = 0;
 
-function storeDiff(oldText: string, newText: string, filename: string): number {
+function storeDiff(oldText: string, newText: string, filename: string, fullDocBefore?: string, fullDocAfter?: string): number {
   const id = diffIdCounter++;
-  diffStore.set(id, { oldText, newText, filename });
+  diffStore.set(id, { oldText, newText, filename, fullDocBefore, fullDocAfter });
   // Keep at most 50 entries to avoid unbounded memory growth
   if (diffStore.size > 50) {
     const oldest = diffStore.keys().next().value;
     if (oldest !== undefined) diffStore.delete(oldest);
   }
   return id;
+}
+
+/** Check if a stored diff can be undone (current file content matches the full doc snapshot after the edit). */
+function isDiffUndoable(diffId: number): boolean {
+  const data = diffStore.get(diffId);
+  if (!data) return false;
+  if (!data.fullDocAfter) return false; // legacy entry without snapshot
+  // Find the editor for this file
+  const editor = vscode.window.visibleTextEditors.find(
+    e => e.document.fileName.endsWith(data.filename) || e.document.fileName.split(/[\\/]/).pop() === data.filename
+  );
+  if (!editor) return false;
+  return editor.document.getText() === data.fullDocAfter;
+}
+
+/** Get all diff IDs that are now stale (can't be undone). */
+function getStaleDiffIds(): number[] {
+  const stale: number[] = [];
+  for (const [id] of diffStore) {
+    if (!isDiffUndoable(id)) stale.push(id);
+  }
+  return stale;
+}
+
+/** Notify sidebar about stale and undoable undo buttons. */
+function notifyStaleDiffs(): void {
+  if (!sidebar) return;
+  const stale: number[] = [];
+  const undoable: number[] = [];
+  for (const [id] of diffStore) {
+    if (isDiffUndoable(id)) undoable.push(id);
+    else stale.push(id);
+  }
+  const state: any = {};
+  if (stale.length > 0) state.staleDiffIds = stale;
+  if (undoable.length > 0) state.undoableDiffIds = undoable;
+  if (stale.length > 0 || undoable.length > 0) sidebar.postState(state);
 }
 
 /** Push a log entry to the sidebar activity log. */
@@ -62,9 +102,12 @@ function pushLog(kind: LogEntry['kind'], text: string, diff?: string, diffId?: n
   sidebar.pushLog({ time, kind, text, diff, diffId });
 }
 
-/** Get the currently selected agent backend from settings. */
+/** In-memory agent selection — updated synchronously on dropdown change, avoids async config race. */
+let __selectedAgent: 'claude' | 'codex' | 'none' = vscode.workspace.getConfiguration('mantra').get<string>('agentBackend', 'none') as 'claude' | 'codex' | 'none';
+
+/** Get the currently selected agent backend. */
 function getSelectedAgent(): 'claude' | 'codex' | 'none' {
-  return vscode.workspace.getConfiguration('mantra').get<string>('agentBackend', 'none') as 'claude' | 'codex' | 'none';
+  return __selectedAgent;
 }
 
 /** Check if the selected agent's mode or terminal is active (voice should go to agent). */
@@ -357,17 +400,20 @@ function syncFromSettings() {
   const cerebras = (cfg.get<string>('cerebrasApiKey') || '').trim();
   const groq = (cfg.get<string>('groqApiKey') || '').trim();
   const deep = (cfg.get<string>('deepgramApiKey') || '').trim();
+  const aqua = (cfg.get<string>('aquavoiceApiKey') || '').trim();
   const effort = (cfg.get<string>('reasoningEffort') || 'low').trim();
   const provider = (cfg.get<string>('llmProvider') || 'groq').trim();
 
   if (cerebras) process.env.CEREBRAS_API_KEY = cerebras;
   if (groq) process.env.GROQ_API_KEY = groq;
   if (deep) process.env.DEEPGRAM_API_KEY = deep;
+  if (aqua) process.env.AQUAVOICE_API_KEY = aqua;
   process.env.MANTRA_REASONING_EFFORT = effort;
 
   if (model) {
     model.setProvider(provider as any);
     if (groq) model.setGroqApiKey(groq);
+    if (aqua) model.setAquavoiceApiKey(aqua);
   }
 }
 
@@ -753,7 +799,7 @@ async function replaceDocumentWithHighlight(
     addedRanges.push({ range: new vscode.Range(start, end) });
   }
 
-  // --- Removed lines: inline “— N lines removed” tag near the anchor ---
+  // --- Removed lines: inline "— N lines removed" tag near the anchor ---
   const removedRanges: vscode.DecorationOptions[] = [];
   for (const { anchor, count } of removed) {
     if (count <= 0) continue;
@@ -775,7 +821,7 @@ async function replaceDocumentWithHighlight(
     });
   }
 
-  // --- Moved blocks: subtle left border + “moved from Lx–Ly” tag on first line ---
+  // --- Moved blocks: subtle left border + "moved from Lx–Ly" tag on first line ---
   const movedRanges: vscode.DecorationOptions[] = [];
   for (const { start, end, fromStart, fromEnd } of moved) {
     if (start > end) continue;
@@ -901,29 +947,54 @@ async function replaceSelectionWithHighlight(
 }
 
 async function ensureApiKeys(context: vscode.ExtensionContext): Promise<boolean> {
-  const commandsOnly = vscode.workspace.getConfiguration('mantra').get<boolean>('commandsOnly', false);
+  const cfg = vscode.workspace.getConfiguration('mantra');
+  const commandsOnly = cfg.get<boolean>('commandsOnly', false);
+  const sttProvider = (cfg.get<string>('sttProvider') || 'deepgram').trim();
 
-  // Deepgram (speech-to-text) — still required to listen to commands
-  if (!deepgramApiKey) {
-    try { deepgramApiKey = (await context.secrets.get('DEEPGRAM_API_KEY')) || ''; } catch { }
-    if (!deepgramApiKey) {
-      deepgramApiKey = await vscode.window.showInputBox({
-        prompt: 'Enter your Deepgram API key',
-        ignoreFocusOut: true,
-        password: true,
-      }) || '';
-      if (!deepgramApiKey) {
-        vscode.window.showWarningMessage('DEEPGRAM_API_KEY is required for transcription.');
-        return false;
+  if (sttProvider === 'aquavoice') {
+    // Aqua Voice (batch speech-to-text)
+    if (!aquavoiceApiKey) {
+      try { aquavoiceApiKey = (await context.secrets.get('AQUAVOICE_API_KEY')) || ''; } catch { }
+      if (!aquavoiceApiKey && process.env.AQUAVOICE_API_KEY) { aquavoiceApiKey = process.env.AQUAVOICE_API_KEY; }
+      if (!aquavoiceApiKey) {
+        aquavoiceApiKey = await vscode.window.showInputBox({
+          prompt: 'Enter your Aqua Voice API key',
+          ignoreFocusOut: true,
+          password: true,
+        }) || '';
+        if (!aquavoiceApiKey) {
+          vscode.window.showWarningMessage('AQUAVOICE_API_KEY is required for Aqua Voice transcription.');
+          return false;
+        }
+        await context.secrets.store('AQUAVOICE_API_KEY', aquavoiceApiKey);
       }
-      await context.secrets.store('DEEPGRAM_API_KEY', deepgramApiKey);
+    }
+  } else {
+    // Deepgram (streaming speech-to-text)
+    if (!deepgramApiKey) {
+      try { deepgramApiKey = (await context.secrets.get('DEEPGRAM_API_KEY')) || ''; } catch { }
+      if (!deepgramApiKey) {
+        deepgramApiKey = await vscode.window.showInputBox({
+          prompt: 'Enter your Deepgram API key',
+          ignoreFocusOut: true,
+          password: true,
+        }) || '';
+        if (!deepgramApiKey) {
+          vscode.window.showWarningMessage('DEEPGRAM_API_KEY is required for transcription.');
+          return false;
+        }
+        await context.secrets.store('DEEPGRAM_API_KEY', deepgramApiKey);
+      }
     }
   }
 
   // Ensure we have a model instance for STT even if LLM is off
   if (!model) {
-    // NOTE: pass empty Cerebras key for now; we’ll set it below if needed
+    // NOTE: pass empty Cerebras key for now; we'll set it below if needed
     model = new Model('', deepgramApiKey);
+  }
+  if (sttProvider === 'aquavoice' && aquavoiceApiKey) {
+    model.setAquavoiceApiKey(aquavoiceApiKey);
   }
 
   // LLM provider setup — only when LLM is enabled
@@ -997,6 +1068,9 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         e.affectsConfiguration('mantra.groqApiKey') ||
         e.affectsConfiguration('mantra.llmProvider') ||
         e.affectsConfiguration('mantra.deepgramApiKey') ||
+        e.affectsConfiguration('mantra.aquavoiceApiKey') ||
+        e.affectsConfiguration('mantra.sttProvider') ||
+        e.affectsConfiguration('mantra.silenceTimeout') ||
         e.affectsConfiguration('mantra.reasoningEffort') ||
         e.affectsConfiguration('mantra.agentBackend') ||
         e.affectsConfiguration('mantra.commandsOnly')
@@ -1014,6 +1088,10 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
           if (e.affectsConfiguration('mantra.groqApiKey')) {
             const newKey = (cfg.get<string>('groqApiKey') || '').trim();
             if (newKey) { groqApiKey = newKey; model.setGroqApiKey(newKey); }
+          }
+          if (e.affectsConfiguration('mantra.aquavoiceApiKey')) {
+            const newKey = (cfg.get<string>('aquavoiceApiKey') || '').trim();
+            if (newKey) { aquavoiceApiKey = newKey; model.setAquavoiceApiKey(newKey); }
           }
         }
       }
@@ -1049,7 +1127,9 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     stopMicTest(); // stop test if running
     if (!(await ensureApiKeys(context))) return;
 
-    console.log('[Mantra] STT model: Flux');
+    const sttProvider = (vscode.workspace.getConfiguration('mantra').get<string>('sttProvider') || 'deepgram').trim();
+    const isAquaVoice = sttProvider === 'aquavoice';
+    console.log(`[Mantra] STT provider: ${isAquaVoice ? 'Aqua Voice (batch)' : 'Deepgram Flux (streaming)'}`);
 
     // Single progress notification for the whole session — updates in-place
     // with live transcription, no spam
@@ -1076,26 +1156,45 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       const cfg = vscode.workspace.getConfiguration('mantra');
       const prov = cfg.get<string>('llmProvider') || 'groq';
       const provLabel = prov === 'groq' ? 'Groq' : 'Cerebras';
-      sidebar?.postState({ listening: true, provider: provLabel });
+      sidebar?.postState({ listening: true, provider: provLabel, sttProvider });
     }
 
     // Volume metering → sidebar
     onVolume((level) => sidebar?.postState({ volume: level }));
 
-    // Loop: mic → Deepgram stream → final transcript → route → repeat
+    // Loop: mic → STT → final transcript → route → repeat
     while (!__mantraPaused) {
       try {
         await startMicStream(context, async (pcm) => {
           // Push mic name to sidebar (resolved inside startMicStream before this callback)
           sidebar?.postState({ mic: getMicName() });
 
-          // Send PCM to Deepgram; show live transcription in the notification
-          let transcript = await model!.transcribeStream(pcm, (partial) => {
-            if (partial) reportProgress?.(partial);
-          });
+          let transcript: string;
+
+          if (isAquaVoice) {
+            // Aqua Voice: buffer audio, detect silence, then send batch
+            const silenceTimeoutSec = parseFloat(
+              vscode.workspace.getConfiguration('mantra').get<string>('silenceTimeout') || '2'
+            ) || 1.5;
+            reportProgress?.('Recording... (speak, then pause to send)');
+            transcript = await model!.transcribeBatch(pcm, (status) => {
+              reportProgress?.(status);
+            }, silenceTimeoutSec, () => __mantraPaused && !__stopAndTranscribe);
+          } else {
+            // Deepgram: stream audio with live transcription
+            transcript = await model!.transcribeStream(pcm, (partial) => {
+              if (partial) reportProgress?.(partial);
+            });
+          }
 
           // Reset notification after transcription completes
           reportProgress?.('Listening...');
+
+          // If the user clicked Stop (not Stop & Transcribe), discard whatever came back
+          if (__mantraPaused && !__stopAndTranscribe) {
+            console.log('[Mantra] Stopped — discarding transcript');
+            return;
+          }
 
           if (!transcript) return;
 
@@ -1108,10 +1207,27 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
           // In agent mode, allow yes/no/yeah/ok through (needed for permission prompts)
           const inAgent = isAgentModeActive();
           const NOISE_RE = inAgent
-            ? /^(two|to|too|four|for|ate|eight|one|won|the|a|an|uh|um|oh|ah|hmm|huh|it|is|i|so|but|hey|hi|bye|hm|mm)\.?$/i
-            : /^(two|to|too|four|for|ate|eight|one|won|the|a|an|uh|um|oh|ah|hmm|huh|it|is|i|so|but|yeah|yep|nah|no|yes|ok|hey|hi|bye|hm|mm)\.?$/i;
+            ? /^(you|two|to|too|four|for|ate|eight|one|won|the|a|an|uh|um|oh|ah|hmm|huh|it|is|i|so|but|hey|hi|bye|hm|mm)\.?$/i
+            : /^(you|two|to|too|four|for|ate|eight|one|won|the|a|an|uh|um|oh|ah|hmm|huh|it|is|i|so|but|yeah|yep|nah|no|yes|ok|hey|hi|bye|hm|mm)\.?$/i;
           if (NOISE_RE.test(transcript.trim())) {
             console.log('[Mantra] Secondary noise filter caught:', transcript);
+            return;
+          }
+
+          // Junk phrase filter — phantom transcriptions from STT hallucinations
+          const JUNK_PHRASES = [
+            /subtitles\s+by\b/i,
+            /amara\.org/i,
+            /^thank\s*you\.?$/i,
+            /^thanks\.?$/i,
+            /^you're\s+welcome\.?$/i,
+            /^bye[\s\-]*bye\.?$/i,
+            /^good\s*(bye|night|morning)\.?$/i,
+            /^please\s+subscribe\.?$/i,
+            /^see\s+you\.?$/i,
+          ];
+          if (JUNK_PHRASES.some(re => re.test(transcript.trim()))) {
+            console.log('[Mantra] Junk phrase filter caught:', transcript);
             return;
           }
 
@@ -1119,11 +1235,16 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
           sidebar?.postState({ lastTranscript: transcript });
           pushLog('transcript', transcript);
 
+          // Aqua Voice: show completed transcript in bottom-right status bar
+          if (isAquaVoice) {
+            vscode.window.setStatusBarMessage(`\u201c${transcript}\u201d`, 5000);
+          }
+
           // --- PAUSE/RESUME interception (pre-LLM) ---
           const t = transcript.trim().toLowerCase();
           if (/(^|\b)(pause|stop listening)(\b|$)/.test(t)) {
-            vscode.window.showInformationMessage('Pausing Mantra...use keyboard shortcut to resume');
-            pushLog('command', 'Paused listening');
+            vscode.window.showInformationMessage('Mantra stopped — use keyboard shortcut to resume');
+            pushLog('command', 'Stopped listening');
             __mantraPaused = true;
             pauseRecording();
             return;
@@ -1448,12 +1569,14 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
           const termHistory = getFullTerminalHistory();
           let result: any;
           try {
+            const isQuickQ = /\bquick\s+question\b/i.test(transcript);
             result = await model!.decide(transcript, {
               editorContext,
               commands: commandsList,
               filename: editor?.document.fileName,
               editor: editor || undefined,
               terminalHistory: termHistory || undefined,
+              agentBackend: isQuickQ ? 'none' : getSelectedAgent(),
             });
           } catch (err: any) {
             const status = (err && (err.status || err.code)) ?? 0;
@@ -1477,6 +1600,12 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
               scopeHighlight.dispose();
               scopeHighlight = null;
             }
+          }
+
+          // "Quick question" override — always force to question type so it's
+          // answered locally, regardless of what the LLM chose.
+          if (/\bquick\s+question\b/i.test(transcript)) {
+            result = { ...result, type: 'question' as any };
           }
 
           if (result.type === 'terminal') {
@@ -1535,23 +1664,32 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
               const filename = editor.document.fileName.split(/[\\/]/).pop() || 'file';
               const diff = makeUnifiedDiff(originalText, rawPayload, filename);
 
+              const fullDocBefore = editor.document.getText();
               await replaceSelectionWithHighlight(editor, sel, rawPayload);
+              const fullDocAfter = editor.document.getText();
               // Clear the blue text selection so it doesn't linger after the edit
               const newPos = new vscode.Position(startLine, 0);
               editor.selection = new vscode.Selection(newPos, newPos);
 
               vscode.window.setStatusBarMessage('Applied selection modification from LLM', 3000);
-              const diffId = storeDiff(originalText, rawPayload, filename);
+              const diffId = storeDiff(originalText, rawPayload, filename, fullDocBefore, fullDocAfter);
               pushLog('modification', `Modified selection in ${filename} (lines ${startLine + 1}–${endLine + 1})`, diff || undefined, diffId);
+              // Immediately mark the new diff as undoable, then recheck all after a delay
+              sidebar?.postState({ undoableDiffIds: [diffId] });
+              setTimeout(() => notifyStaleDiffs(), 150);
             } else {
-              const oldText = editor.document.getText();
+              const fullDocBefore = editor.document.getText();
               const newText = stripMarkdownCodeFence(result.payload ?? '');
               const filename = editor.document.fileName.split(/[\\/]/).pop() || 'file';
-              const diff = makeUnifiedDiff(oldText, newText, filename);
+              const diff = makeUnifiedDiff(fullDocBefore, newText, filename);
               await replaceDocumentWithHighlight(editor, newText);
+              const fullDocAfter = editor.document.getText();
               vscode.window.setStatusBarMessage('Applied modification from LLM', 3000);
-              const diffId = storeDiff(oldText, newText, filename);
+              const diffId = storeDiff(fullDocBefore, newText, filename, fullDocBefore, fullDocAfter);
               pushLog('modification', `Modified ${filename}`, diff || undefined, diffId);
+              // Immediately mark the new diff as undoable, then recheck all after a delay
+              sidebar?.postState({ undoableDiffIds: [diffId] });
+              setTimeout(() => notifyStaleDiffs(), 150);
             }
           } else {
             // "question" type — route to Quick Question panel or to agent.
@@ -1610,6 +1748,14 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         await new Promise((res) => setTimeout(res, 2000));
       }
 
+      // Stop & Transcribe: pause after this iteration completes
+      if (__stopAndTranscribe) {
+        __stopAndTranscribe = false;
+        __mantraPaused = true;
+        vscode.window.showInformationMessage('Mantra stopped after transcribing.');
+        break;
+      }
+
       // small idle so we don't spin if the recorder stops
       if (!recorderActive()) await new Promise((res) => setTimeout(res, 100));
     }
@@ -1628,8 +1774,21 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     offVolume();
     pauseRecording();
     sidebar?.postState({ listening: false, volume: 0 });
-    vscode.window.showInformationMessage('Mantra paused');
-    console.log('Paused');
+    vscode.window.showInformationMessage('Mantra stopped');
+    console.log('Stopped');
+  });
+
+  const stopAndTranscribeDisposable = vscode.commands.registerCommand('mantra.stopAndTranscribe', () => {
+    __stopAndTranscribe = true;
+    pauseRecording();
+  });
+
+  const pttStartDisposable = vscode.commands.registerCommand('mantra.pttStart', () => {
+    startPtt();
+  });
+
+  const pttStopDisposable = vscode.commands.registerCommand('mantra.pttStop', () => {
+    stopPtt();
   });
 
   const configurePromptDisposable = vscode.commands.registerCommand('mantra.configurePrompt', async () => {
@@ -1701,7 +1860,12 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     () => vscode.commands.executeCommand('workbench.action.openSettings', '@id:mantra.deepgramApiKey')
   );
 
-  context.subscriptions.push(openSettingsCmd, editCerebrasCmd, editGroqCmd, editDeepgramCmd);
+  const editAquavoiceCmd = vscode.commands.registerCommand(
+    'mantra.editAquavoiceApiKey',
+    () => vscode.commands.executeCommand('workbench.action.openSettings', '@id:mantra.aquavoiceApiKey')
+  );
+
+  context.subscriptions.push(openSettingsCmd, editCerebrasCmd, editGroqCmd, editDeepgramCmd, editAquavoiceCmd);
 
   // Track terminal command history for Claude context
   context.subscriptions.push(...initTerminalHistory());
@@ -1711,7 +1875,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     focusSelectedAgent();
   });
 
-  // Focus Codex CLI terminal (routes to selected agent)
+  // Focus Codex terminal (routes to selected agent)
   const focusCodexDisposable = vscode.commands.registerCommand('mantra.focusCodex', () => {
     focusSelectedAgent();
   });
@@ -1744,9 +1908,14 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 
   // Agent backend change from sidebar
   sidebar.onAgentChange((agent) => {
+    __selectedAgent = agent as 'claude' | 'codex' | 'none';
     const cfg = vscode.workspace.getConfiguration('mantra');
     cfg.update('agentBackend', agent, vscode.ConfigurationTarget.Global);
     console.log(`[Mantra] Agent backend changed to: ${agent}`);
+    // Stop recording without transcribing when settings change
+    if (__mantraSessionActive) {
+      vscode.commands.executeCommand('mantra.pause');
+    }
 
     if (agent === 'none') {
       // No agent — don't close anything, just update state
@@ -1771,6 +1940,32 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     cfg.update('llmProvider', provider, vscode.ConfigurationTarget.Global);
     if (model) model.setProvider(provider as any);
     console.log(`[Mantra] LLM provider changed to: ${provider}`);
+    // Stop recording without transcribing when settings change
+    if (__mantraSessionActive) {
+      vscode.commands.executeCommand('mantra.pause');
+    }
+  });
+
+  // STT provider change from sidebar
+  sidebar.onSttProviderChange((provider) => {
+    const cfg = vscode.workspace.getConfiguration('mantra');
+    cfg.update('sttProvider', provider, vscode.ConfigurationTarget.Global);
+    console.log(`[Mantra] STT provider changed to: ${provider}`);
+    // Stop recording without transcribing when settings change
+    if (__mantraSessionActive) {
+      vscode.commands.executeCommand('mantra.pause');
+    }
+  });
+
+  // Silence timeout change from sidebar
+  sidebar.onSilenceTimeoutChange((timeout) => {
+    const cfg = vscode.workspace.getConfiguration('mantra');
+    cfg.update('silenceTimeout', timeout, vscode.ConfigurationTarget.Global);
+    console.log(`[Mantra] Silence timeout changed to: ${timeout}s`);
+    // Stop recording without transcribing when settings change
+    if (__mantraSessionActive) {
+      vscode.commands.executeCommand('mantra.pause');
+    }
   });
 
   // Install agent from sidebar
@@ -1808,6 +2003,243 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     vscode.commands.executeCommand('vscode.diff', oldUri, newUri, `${data.filename} (before \u2194 after)`);
   });
 
+  // Undo a diff from sidebar
+  sidebar.onUndoDiff(async (diffId) => {
+    const data = diffStore.get(diffId);
+    if (!data) {
+      vscode.window.showWarningMessage('Diff data no longer available.');
+      return;
+    }
+
+    // Find the editor for this file
+    const editor = vscode.window.visibleTextEditors.find(
+      e => e.document.fileName.endsWith(data.filename) || e.document.fileName.split(/[\\/]/).pop() === data.filename
+    );
+    if (!editor) {
+      vscode.window.showWarningMessage(`File "${data.filename}" is not open in an editor.`);
+      sidebar?.postState({ staleDiffIds: [diffId] });
+      return;
+    }
+
+    // Check if the undo is still valid (compare full document snapshot)
+    if (!data.fullDocAfter || editor.document.getText() !== data.fullDocAfter) {
+      vscode.window.showWarningMessage('Cannot undo: the file has been modified since this change.');
+      sidebar?.postState({ staleDiffIds: [diffId] });
+      return;
+    }
+
+    // Apply the undo — restore the full document to its state before the edit
+    const restoreTo = data.fullDocBefore ?? data.oldText;
+    await replaceDocumentWithHighlight(editor, restoreTo);
+    vscode.window.setStatusBarMessage(`Undid change in ${data.filename}`, 3000);
+    pushLog('command', `Undid change in ${data.filename}`);
+
+    // Mark this diff as stale (it's been undone)
+    sidebar?.postState({ staleDiffIds: [diffId] });
+
+    // Check if any other diffs are now stale
+    notifyStaleDiffs();
+  });
+
+  // Push-to-talk: shared logic for sidebar button and keyboard shortcut
+  let pttRunning = false;
+
+  async function startPtt(): Promise<void> {
+    if (__mantraSessionActive || pttRunning) {
+      if (__mantraSessionActive) {
+        vscode.window.showWarningMessage('Stop the main recording first before using Push to Talk.');
+      }
+      return;
+    }
+    pttRunning = true;
+    vscode.commands.executeCommand('setContext', 'mantra.pttActive', true);
+    stopMicTest();
+
+    if (!(await ensureApiKeys(context))) {
+      pttRunning = false;
+      vscode.commands.executeCommand('setContext', 'mantra.pttActive', false);
+      sidebar?.postState({ pttActive: false });
+      return;
+    }
+    sidebar?.postState({ pttActive: true });
+    onVolume((level) => sidebar?.postState({ volume: level }));
+
+    try {
+      await startMicStream(context, async (pcm) => {
+        sidebar?.postState({ mic: getMicName() });
+
+        // Always use batch mode for PTT — user controls when to stop
+        let transcript: string;
+        const sttProvider = (vscode.workspace.getConfiguration('mantra').get<string>('sttProvider') || 'deepgram').trim();
+        if (sttProvider === 'aquavoice') {
+          transcript = await model!.transcribeBatch(pcm, undefined, 999);
+        } else {
+          transcript = await model!.transcribeStream(pcm);
+        }
+
+        if (!transcript) return;
+
+        // Same filtering as main loop
+        transcript = transcript.replace(/\bcodecs\b/gi, 'codex');
+        transcript = transcript.replace(/\bdysfunction\b/gi, 'this function');
+        transcript = transcript.replace(/\bdis function\b/gi, 'this function');
+
+        const NOISE_RE = /^(you|two|to|too|four|for|ate|eight|one|won|the|a|an|uh|um|oh|ah|hmm|huh|it|is|i|so|but|yeah|yep|nah|no|yes|ok|hey|hi|bye|hm|mm)\.?$/i;
+        if (NOISE_RE.test(transcript.trim())) return;
+
+        const JUNK_PHRASES = [
+          /subtitles\s+by\b/i, /amara\.org/i, /^thank\s*you\.?$/i, /^thanks\.?$/i,
+          /^you're\s+welcome\.?$/i, /^bye[\s\-]*bye\.?$/i, /^good\s*(bye|night|morning)\.?$/i,
+          /^please\s+subscribe\.?$/i, /^see\s+you\.?$/i,
+        ];
+        if (JUNK_PHRASES.some(re => re.test(transcript.trim()))) return;
+
+        // Show transcript
+        sidebar?.postState({ lastTranscript: transcript });
+        pushLog('transcript', transcript);
+        vscode.window.setStatusBarMessage(`\u201c${transcript}\u201d`, 5000);
+
+        // Process through the same pipeline as the main loop
+        // For PTT, we do simplified processing: pre-LLM shortcuts then LLM routing
+        const t = transcript.trim().toLowerCase();
+        const tc = t.replace(/[.,!?;:]+$/, '').trim();
+
+        // Refocus the editor so commands like "undo" target the right pane
+        await vscode.commands.executeCommand('workbench.action.focusActiveEditorGroup');
+
+        // System commands
+        if (await trySystemCommand(tc, vscode.window.state.focused)) {
+          pushLog('command', tc);
+          return;
+        }
+
+        // Quick commands
+        if (await handleTextCommand(tc, context) || await tryExecuteMappedCommand(tc)) {
+          pushLog('command', tc);
+          return;
+        }
+
+        // LLM routing
+        const cfg = vscode.workspace.getConfiguration('mantra');
+        const commandsOnly = cfg.get<boolean>('commandsOnly', false);
+        if (commandsOnly) return;
+
+        const editor = vscode.window.activeTextEditor;
+        const editorContext = editor ? `File: ${editor.document.fileName}\nLanguage: ${editor.document.languageId}` : '';
+        const commandsList = canonicalCommandPhrases();
+        const filename = editor?.document.fileName.split(/[\\/]/).pop() || '';
+        const termHistory = getFullTerminalHistory();
+
+        const isQuickQ = /\bquick\s+question\b/i.test(transcript);
+        let result = await model!.decide(transcript, {
+          editorContext, commands: commandsList, filename: editor?.document.fileName, editor: editor ?? undefined,
+          terminalHistory: termHistory || undefined,
+          agentBackend: isQuickQ ? 'none' : getSelectedAgent(),
+        });
+
+        if (!result) return;
+
+        // "Quick question" override (same as main loop)
+        if (/\bquick\s+question\b/i.test(transcript)) {
+          result = { ...result, type: 'question' as any };
+        }
+
+        pushLog(result.type as LogEntry['kind'], result.payload?.substring(0, 200) || transcript);
+
+        // Apply result (same logic as main loop)
+        if (result.type === 'terminal') {
+          const shellCmd = (result.payload || '').trim();
+          if (shellCmd) {
+            const shouldWait = /\b(don'?t (run|execute)|but (wait|hold|don'?t)|and (wait|hold)|just type|type it|don'?t hit enter|wait)\b/i.test(transcript);
+            if (shouldWait) { typeInTerminal(shellCmd); } else { executeInTerminal(shellCmd); }
+          }
+        } else if (result.type === 'claude' || result.type === 'codex' || result.type === 'agent') {
+          const prompt = (result.payload || '').trim();
+          if (prompt) {
+            const agent = getSelectedAgent();
+            if (agent !== 'none') {
+              if (isAgentModeActive()) typeInSelectedAgent(prompt);
+              else await sendToSelectedAgent(buildClaudePrompt(prompt));
+            }
+          }
+        } else if (result.type === 'command') {
+          const phrase = (result.payload || '').toString().trim();
+          await handleTextCommand(phrase, context) || await tryExecuteMappedCommand(phrase);
+        } else if (result.type === 'modification' && editor) {
+          if (result.selectionMode && !editor.selection.isEmpty) {
+            const sel = editor.selection;
+            const startLine = sel.start.line;
+            const endLine = sel.end.line;
+            const originalText = editor.document.getText(new vscode.Range(
+              new vscode.Position(startLine, 0),
+              new vscode.Position(endLine, editor.document.lineAt(endLine).text.length)
+            ));
+            const rawPayload = stripMarkdownCodeFence(result.payload ?? '');
+            const fname = editor.document.fileName.split(/[\\/]/).pop() || 'file';
+            const diff = makeUnifiedDiff(originalText, rawPayload, fname);
+            const fullDocBefore = editor.document.getText();
+            await replaceSelectionWithHighlight(editor, sel, rawPayload);
+            const fullDocAfter = editor.document.getText();
+            const newPos = new vscode.Position(startLine, 0);
+            editor.selection = new vscode.Selection(newPos, newPos);
+            const diffId = storeDiff(originalText, rawPayload, fname, fullDocBefore, fullDocAfter);
+            pushLog('modification', `Modified selection in ${fname} (lines ${startLine + 1}\u2013${endLine + 1})`, diff || undefined, diffId);
+            sidebar?.postState({ undoableDiffIds: [diffId] });
+            setTimeout(() => notifyStaleDiffs(), 150);
+          } else {
+            const fullDocBefore = editor.document.getText();
+            const newText = stripMarkdownCodeFence(result.payload ?? '');
+            const fname = editor.document.fileName.split(/[\\/]/).pop() || 'file';
+            const diff = makeUnifiedDiff(fullDocBefore, newText, fname);
+            await replaceDocumentWithHighlight(editor, newText);
+            const fullDocAfter = editor.document.getText();
+            const diffId = storeDiff(fullDocBefore, newText, fname, fullDocBefore, fullDocAfter);
+            pushLog('modification', `Modified ${fname}`, diff || undefined, diffId);
+            sidebar?.postState({ undoableDiffIds: [diffId] });
+            setTimeout(() => notifyStaleDiffs(), 150);
+          }
+        } else if (result.type === 'question') {
+          const answer = result.payload;
+          if (outputChannel && answer) {
+            const sep = '\u2500'.repeat(60);
+            const time = new Date().toLocaleTimeString();
+            outputChannel.appendLine(`[${time}] Q: ${transcript.trim()}`);
+            outputChannel.appendLine((answer || '').trim());
+            outputChannel.appendLine(sep);
+            outputChannel.show(true);
+          }
+          pushLog('question', (answer || '').trim().substring(0, 200));
+        }
+
+        if (model && result) {
+          model.updateMemory(transcript, result, termHistory || undefined)
+            .then(() => sidebar?.postState({ memory: model!.getMemory() }))
+            .catch(() => {});
+        }
+      });
+    } catch (err: any) {
+      console.error('[Mantra] PTT error:', err?.message || err);
+    } finally {
+      pttRunning = false;
+      offVolume();
+      vscode.commands.executeCommand('setContext', 'mantra.pttActive', false);
+      sidebar?.postState({ pttActive: false, volume: 0 });
+    }
+  }
+
+  function stopPtt(): void {
+    pauseRecording();
+  }
+
+  sidebar.onPttStart(() => { startPtt(); });
+  sidebar.onPttStop(() => { stopPtt(); });
+
+  // Stop & Transcribe: force-transcribe current audio then pause
+  sidebar.onStopAndTranscribe(() => {
+    __stopAndTranscribe = true;
+    pauseRecording(); // kills FFmpeg → stream ends → STT resolves with whatever it has
+  });
+
   // Register virtual document provider for diff tab content
   const diffContentProvider: vscode.TextDocumentContentProvider = {
     provideTextDocumentContent(uri: vscode.Uri): string {
@@ -1824,11 +2256,23 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     vscode.workspace.registerTextDocumentContentProvider('mantra-diff', diffContentProvider)
   );
 
+  // Re-evaluate undo staleness when any document changes (e.g. user edits or Ctrl+Z)
+  let staleDiffTimer: NodeJS.Timeout | null = null;
+  context.subscriptions.push(
+    vscode.workspace.onDidChangeTextDocument(() => {
+      // Debounce to avoid firing on every keystroke
+      if (staleDiffTimer) clearTimeout(staleDiffTimer);
+      staleDiffTimer = setTimeout(() => notifyStaleDiffs(), 300);
+    })
+  );
+
   // Push initial state to sidebar
   {
     const cfg = vscode.workspace.getConfiguration('mantra');
     const agent = cfg.get<string>('agentBackend') || 'claude';
     const provider = cfg.get<string>('llmProvider') || 'groq';
+    const stt = cfg.get<string>('sttProvider') || 'deepgram';
+    const silenceTimeout = cfg.get<string>('silenceTimeout') || '2';
     const installed = agent === 'claude' ? true : checkCliInstalled('codex');
     const cmdOnly = cfg.get<boolean>('commandsOnly', false);
     const micArgs = cfg.get<string>('microphoneInput') || '';
@@ -1840,6 +2284,8 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       agentBackend: agent,
       agentInstalled: installed,
       llmProvider: provider,
+      sttProvider: stt,
+      silenceTimeout,
       commandsOnly: cmdOnly,
       availableMics,
       micArgs,
@@ -1861,10 +2307,16 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     });
   });
 
+  // Initialize PTT context for keybinding toggle
+  vscode.commands.executeCommand('setContext', 'mantra.pttActive', false);
+
   // Add to subscriptions:
   context.subscriptions.push(
     startDisposable,
     pauseDisposable,
+    stopAndTranscribeDisposable,
+    pttStartDisposable,
+    pttStopDisposable,
     configurePromptDisposable,
     toggleCommandsOnlyDisposable,
     selectMicDisposable,

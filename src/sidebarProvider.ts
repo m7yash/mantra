@@ -13,9 +13,12 @@ export interface SidebarState {
   memory?: string;        // conversation memory text
   mic?: string;           // current microphone name
   provider?: string;      // e.g. "Groq" or "Cerebras"
+  sttProvider?: string;   // 'deepgram' | 'aquavoice'
+  silenceTimeout?: string; // seconds as string, e.g. '1.5'
   lastTranscript?: string;
   listening?: boolean;
   testing?: boolean;      // mic test mode
+  pttActive?: boolean;    // push-to-talk active
   routerPrompt?: string;  // main LLM system prompt
   memoryPrompt?: string;  // memory manager system prompt
   selectionPrompt?: string; // selection model system prompt
@@ -25,6 +28,8 @@ export interface SidebarState {
   commandsOnly?: boolean; // commands-only mode toggle
   availableMics?: Array<{label: string, args: string}>; // enumerated microphones
   micArgs?: string;       // currently selected mic args string
+  staleDiffIds?: number[]; // diff IDs that can no longer be undone
+  undoableDiffIds?: number[]; // diff IDs that became undoable again
 }
 
 export class MantraSidebarProvider implements vscode.WebviewViewProvider {
@@ -36,9 +41,15 @@ export class MantraSidebarProvider implements vscode.WebviewViewProvider {
   private _onPromptEdit?: (key: string, text: string) => void;
   private _onAgentChange?: (agent: string) => void;
   private _onProviderChange?: (provider: string) => void;
+  private _onSttProviderChange?: (provider: string) => void;
+  private _onSilenceTimeoutChange?: (timeout: string) => void;
   private _onInstallAgent?: () => void;
   private _onMicChange?: (args: string) => void;
   private _onOpenDiffTab?: (diffId: number) => void;
+  private _onUndoDiff?: (diffId: number) => void;
+  private _onPttStart?: () => void;
+  private _onPttStop?: () => void;
+  private _onStopAndTranscribe?: () => void;
 
   constructor(private readonly _extensionUri: vscode.Uri) {}
 
@@ -62,6 +73,16 @@ export class MantraSidebarProvider implements vscode.WebviewViewProvider {
     this._onProviderChange = cb;
   }
 
+  /** Register a callback for when the user changes the STT provider. */
+  public onSttProviderChange(cb: (provider: string) => void): void {
+    this._onSttProviderChange = cb;
+  }
+
+  /** Register a callback for when the user changes the silence timeout. */
+  public onSilenceTimeoutChange(cb: (timeout: string) => void): void {
+    this._onSilenceTimeoutChange = cb;
+  }
+
   /** Register a callback for when the user clicks the install button. */
   public onInstallAgent(cb: () => void): void {
     this._onInstallAgent = cb;
@@ -75,6 +96,26 @@ export class MantraSidebarProvider implements vscode.WebviewViewProvider {
   /** Register a callback for when the user clicks "Open in tab" on a diff. */
   public onOpenDiffTab(cb: (diffId: number) => void): void {
     this._onOpenDiffTab = cb;
+  }
+
+  /** Register a callback for when the user clicks "Undo" on a diff. */
+  public onUndoDiff(cb: (diffId: number) => void): void {
+    this._onUndoDiff = cb;
+  }
+
+  /** Register a callback for push-to-talk start. */
+  public onPttStart(cb: () => void): void {
+    this._onPttStart = cb;
+  }
+
+  /** Register a callback for push-to-talk stop. */
+  public onPttStop(cb: () => void): void {
+    this._onPttStop = cb;
+  }
+
+  /** Register a callback for stop-and-transcribe. */
+  public onStopAndTranscribe(cb: () => void): void {
+    this._onStopAndTranscribe = cb;
   }
 
   /** Push live state to the webview. Caches so the sidebar can restore on re-open. */
@@ -124,6 +165,14 @@ export class MantraSidebarProvider implements vscode.WebviewViewProvider {
         if (this._onProviderChange && typeof msg.provider === 'string') {
           this._onProviderChange(msg.provider);
         }
+      } else if (msg.type === 'sttProviderChange') {
+        if (this._onSttProviderChange && typeof msg.provider === 'string') {
+          this._onSttProviderChange(msg.provider);
+        }
+      } else if (msg.type === 'silenceTimeoutChange') {
+        if (this._onSilenceTimeoutChange && typeof msg.timeout === 'string') {
+          this._onSilenceTimeoutChange(msg.timeout);
+        }
       } else if (msg.type === 'installAgent') {
         if (this._onInstallAgent) {
           this._onInstallAgent();
@@ -136,7 +185,27 @@ export class MantraSidebarProvider implements vscode.WebviewViewProvider {
         if (this._onOpenDiffTab && typeof msg.diffId === 'number') {
           this._onOpenDiffTab(msg.diffId);
         }
+      } else if (msg.type === 'undoDiff') {
+        if (this._onUndoDiff && typeof msg.diffId === 'number') {
+          this._onUndoDiff(msg.diffId);
+        }
+      } else if (msg.type === 'pttStart') {
+        if (this._onPttStart) this._onPttStart();
+      } else if (msg.type === 'pttStop') {
+        if (this._onPttStop) this._onPttStop();
+      } else if (msg.type === 'stopAndTranscribe') {
+        if (this._onStopAndTranscribe) this._onStopAndTranscribe();
       } else if (msg.type === 'ready') {
+        // Refresh cached state from VS Code settings so dropdowns survive webview re-creation
+        const cfg = vscode.workspace.getConfiguration('mantra');
+        const settingsState: SidebarState = {
+          agentBackend: cfg.get<string>('agentBackend') || 'none',
+          llmProvider: cfg.get<string>('llmProvider') || 'groq',
+          sttProvider: cfg.get<string>('sttProvider') || 'deepgram',
+          silenceTimeout: cfg.get<string>('silenceTimeout') || '2',
+        };
+        Object.assign(this._cachedState, settingsState);
+
         // Webview loaded — push cached state so it's populated immediately
         if (Object.keys(this._cachedState).length > 0) {
           this._view?.webview.postMessage({ type: 'state', ...this._cachedState });
@@ -229,6 +298,62 @@ export class MantraSidebarProvider implements vscode.WebviewViewProvider {
     font-weight: 400;
     opacity: 0.7;
   }
+
+  /* ── Split buttons (when recording) ── */
+  .split-row {
+    display: flex;
+    gap: 6px;
+    padding: 0 0 6px;
+  }
+  .split-row .toggle-btn {
+    flex: 1;
+    font-size: 12px;
+    padding: 8px 6px;
+  }
+
+  /* ── Push-to-talk ── */
+  .ptt-btn {
+    width: 100%;
+    padding: 8px 10px;
+    border: 1px dashed var(--vscode-widget-border, rgba(128,128,128,0.35));
+    border-radius: 6px;
+    background: transparent;
+    color: var(--vscode-foreground);
+    font-family: var(--vscode-font-family);
+    font-size: 12px;
+    font-weight: 500;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 6px;
+    transition: background 0.1s, border-color 0.1s;
+    user-select: none;
+  }
+  .ptt-btn:hover { background: var(--vscode-list-hoverBackground); }
+  .ptt-btn.active {
+    background: var(--vscode-button-background);
+    color: var(--vscode-button-foreground);
+    border-style: solid;
+    border-color: var(--vscode-button-background);
+  }
+
+  /* ── Undo link in log ── */
+  .log-undo-toggle {
+    font-size: 10px;
+    color: var(--vscode-editorWarning-foreground, #cca700);
+    cursor: pointer;
+    margin-top: 2px;
+    display: inline-block;
+  }
+  .log-undo-toggle:hover { text-decoration: underline; }
+  .log-undo-toggle.stale {
+    color: var(--vscode-disabledForeground);
+    cursor: default;
+    opacity: 0.5;
+    text-decoration: none;
+  }
+  .log-undo-toggle.stale:hover { text-decoration: none; }
 
   /* ── Volume meter ── */
   .meter-wrap {
@@ -471,11 +596,23 @@ export class MantraSidebarProvider implements vscode.WebviewViewProvider {
 </head>
 <body>
 
-  <!-- Start / Pause toggle -->
-  <div class="toggle-wrap">
+  <!-- Start / Pause toggle (single when idle, splits into two when recording) -->
+  <div class="toggle-wrap" id="singleBtnWrap">
     <button class="toggle-btn" id="toggleBtn">
       <span id="toggleLabel">Start Listening</span>
       <span class="toggle-hint" id="toggleHint">Ctrl+Shift+1</span>
+    </button>
+  </div>
+  <div class="split-row" id="splitBtnWrap" style="display:none;">
+    <button class="toggle-btn" id="pauseBtn" style="background:var(--vscode-button-secondaryBackground, rgba(128,128,128,0.2));color:var(--vscode-button-secondaryForeground, var(--vscode-foreground));">Stop</button>
+    <button class="toggle-btn" id="stopTranscribeBtn">Stop &amp; Transcribe</button>
+  </div>
+
+  <!-- Push-to-talk -->
+  <div style="padding:0 0 6px;">
+    <button class="ptt-btn" id="pttBtn">
+      <span id="pttLabel">Push to Talk</span>
+      <span class="toggle-hint">hold to record</span>
     </button>
   </div>
 
@@ -546,7 +683,7 @@ export class MantraSidebarProvider implements vscode.WebviewViewProvider {
     <select id="agentSelect" class="dropdown">
       <option value="none">None</option>
       <option value="claude">Claude Code</option>
-      <option value="codex">Codex CLI</option>
+      <option value="codex">Codex</option>
     </select>
     <div id="agentHint" class="agent-hint" style="font-size:10px;color:var(--vscode-descriptionForeground);padding:2px 0;display:none;">Non-edit/command speech → Quick Question</div>
     <div id="installWrap" class="install-wrap" style="display:none;">
@@ -559,6 +696,25 @@ export class MantraSidebarProvider implements vscode.WebviewViewProvider {
     <select id="providerSelect" class="dropdown">
       <option value="groq">Groq</option>
       <option value="cerebras">Cerebras</option>
+    </select>
+  </div>
+  <div style="padding:2px 0;">
+    <div style="font-size:11px;color:var(--vscode-descriptionForeground);padding:2px 0;">STT Provider</div>
+    <select id="sttSelect" class="dropdown">
+      <option value="deepgram">Deepgram</option>
+      <option value="aquavoice">Aqua Voice</option>
+    </select>
+  </div>
+  <div style="padding:2px 0;" id="silenceWrap">
+    <div style="font-size:11px;color:var(--vscode-descriptionForeground);padding:2px 0;">Silence Timeout</div>
+    <select id="silenceSelect" class="dropdown">
+      <option value="0.5">0.5s</option>
+      <option value="1">1s</option>
+      <option value="1.5">1.5s</option>
+      <option value="2">2s (default)</option>
+      <option value="3">3s</option>
+      <option value="4">4s</option>
+      <option value="5">5s</option>
     </select>
   </div>
   <div style="padding:2px 0;">
@@ -598,6 +754,10 @@ export class MantraSidebarProvider implements vscode.WebviewViewProvider {
     <span class="row-icon">&#128273;</span>
     <span class="row-label">Cerebras</span>
   </button>
+  <button class="row" data-cmd="mantra.editAquavoiceApiKey">
+    <span class="row-icon">&#128273;</span>
+    <span class="row-label">Aqua Voice</span>
+  </button>
 
   <div class="divider"></div>
 
@@ -622,10 +782,17 @@ export class MantraSidebarProvider implements vscode.WebviewViewProvider {
     const vscode = acquireVsCodeApi();
     let listening = false;
     let testing = false;
+    let savedMicArgs = '';
 
     const toggleBtn = document.getElementById('toggleBtn');
     const toggleLabel = document.getElementById('toggleLabel');
     const toggleHint = document.getElementById('toggleHint');
+    const singleBtnWrap = document.getElementById('singleBtnWrap');
+    const splitBtnWrap = document.getElementById('splitBtnWrap');
+    const pauseBtn = document.getElementById('pauseBtn');
+    const stopTranscribeBtn = document.getElementById('stopTranscribeBtn');
+    const pttBtn = document.getElementById('pttBtn');
+    const pttLabel = document.getElementById('pttLabel');
     const testBtn = document.getElementById('testBtn');
     const testLabel = document.getElementById('testLabel');
     const meterWrap = document.getElementById('meterWrap');
@@ -646,6 +813,9 @@ export class MantraSidebarProvider implements vscode.WebviewViewProvider {
     const installMsg = document.getElementById('installMsg');
     const installBtn = document.getElementById('installBtn');
     const providerSelect = document.getElementById('providerSelect');
+    const sttSelect = document.getElementById('sttSelect');
+    const silenceSelect = document.getElementById('silenceSelect');
+    const silenceWrap = document.getElementById('silenceWrap');
     const focusAgentLabel = document.getElementById('focusAgentLabel');
     const cmdOnlyHint = document.getElementById('cmdOnlyHint');
     const micSelect = document.getElementById('micSelect');
@@ -657,6 +827,33 @@ export class MantraSidebarProvider implements vscode.WebviewViewProvider {
         vscode.postMessage({ type: 'command', command: 'mantra.start' });
       }
     });
+
+    // Split buttons (visible when recording)
+    pauseBtn.addEventListener('click', () => {
+      vscode.postMessage({ type: 'command', command: 'mantra.pause' });
+    });
+    stopTranscribeBtn.addEventListener('click', () => {
+      vscode.postMessage({ type: 'stopAndTranscribe' });
+    });
+
+    // Push-to-talk (hold to record)
+    let pttActive = false;
+    pttBtn.addEventListener('mousedown', (e) => {
+      if (e.button !== 0) return;
+      pttActive = true;
+      pttBtn.classList.add('active');
+      pttLabel.textContent = 'Recording...';
+      vscode.postMessage({ type: 'pttStart' });
+    });
+    function pttRelease() {
+      if (!pttActive) return;
+      pttActive = false;
+      pttBtn.classList.remove('active');
+      pttLabel.textContent = 'Push to Talk';
+      vscode.postMessage({ type: 'pttStop' });
+    }
+    pttBtn.addEventListener('mouseup', pttRelease);
+    pttBtn.addEventListener('mouseleave', pttRelease);
 
     testBtn.addEventListener('click', () => {
       vscode.postMessage({ type: 'command', command: 'mantra.testMicrophone' });
@@ -685,6 +882,16 @@ export class MantraSidebarProvider implements vscode.WebviewViewProvider {
     // LLM Provider dropdown
     providerSelect.addEventListener('change', () => {
       vscode.postMessage({ type: 'providerChange', provider: providerSelect.value });
+    });
+
+    // STT Provider dropdown
+    sttSelect.addEventListener('change', () => {
+      vscode.postMessage({ type: 'sttProviderChange', provider: sttSelect.value });
+    });
+
+    // Silence timeout dropdown
+    silenceSelect.addEventListener('change', () => {
+      vscode.postMessage({ type: 'silenceTimeoutChange', timeout: silenceSelect.value });
     });
 
     // Microphone dropdown
@@ -720,6 +927,7 @@ export class MantraSidebarProvider implements vscode.WebviewViewProvider {
         html += '<br><span class="log-diff-toggle" onclick="var d=document.getElementById(\\'' + id + '\\');d.style.display=d.style.display===\\'none\\'?\\'block\\':\\'none\\'">Show diff</span>';
         if (entry.diffId !== undefined) {
           html += ' &middot; <span class="log-diff-toggle" onclick="vscode.postMessage({type:\\'openDiffTab\\',diffId:' + entry.diffId + '})">Open in tab</span>';
+          html += ' &middot; <span class="log-undo-toggle" id="undo' + entry.diffId + '" data-diffid="' + entry.diffId + '" onclick="if(!this.classList.contains(\\'stale\\'))vscode.postMessage({type:\\'undoDiff\\',diffId:' + entry.diffId + '})">Undo this change</span>';
         }
         html += '<div class="log-diff" id="' + id + '">' + renderDiffHtml(entry.diff) + '</div>';
       }
@@ -744,7 +952,17 @@ export class MantraSidebarProvider implements vscode.WebviewViewProvider {
       }
 
       if (msg.provider !== undefined && msg.provider) {
-        providerRow.textContent = msg.provider;
+        const sttLabel = msg.sttProvider === 'aquavoice' ? 'Aqua Voice' : 'Deepgram';
+        providerRow.textContent = msg.provider + ' · ' + sttLabel;
+      }
+      if (msg.sttProvider !== undefined) {
+        // Update provider row with STT info if provider is already set
+        const currentText = providerRow.textContent || '';
+        const llmPart = currentText.split(' · ')[0] || '';
+        if (llmPart) {
+          const sttLabel = msg.sttProvider === 'aquavoice' ? 'Aqua Voice' : 'Deepgram';
+          providerRow.textContent = llmPart + ' · ' + sttLabel;
+        }
       }
 
       if (msg.lastTranscript !== undefined && msg.lastTranscript) {
@@ -789,7 +1007,7 @@ export class MantraSidebarProvider implements vscode.WebviewViewProvider {
         if (msg.agentInstalled || agentSelect.value === 'none') {
           installWrap.style.display = 'none';
         } else {
-          const name = agentSelect.value === 'codex' ? 'Codex CLI' : 'Claude Code CLI';
+          const name = agentSelect.value === 'codex' ? 'Codex' : 'Claude Code';
           installMsg.textContent = name + ' is not installed.';
           installWrap.style.display = '';
         }
@@ -797,6 +1015,18 @@ export class MantraSidebarProvider implements vscode.WebviewViewProvider {
 
       if (msg.llmProvider !== undefined) {
         providerSelect.value = msg.llmProvider;
+      }
+
+      if (msg.sttProvider !== undefined) {
+        sttSelect.value = msg.sttProvider;
+        // Only show silence timeout for Aqua Voice (batch mode)
+        if (silenceWrap) {
+          silenceWrap.style.display = msg.sttProvider === 'aquavoice' ? '' : 'none';
+        }
+      }
+
+      if (msg.silenceTimeout !== undefined) {
+        silenceSelect.value = msg.silenceTimeout;
       }
 
       if (msg.availableMics !== undefined) {
@@ -807,9 +1037,14 @@ export class MantraSidebarProvider implements vscode.WebviewViewProvider {
           opt.textContent = mic.label;
           micSelect.appendChild(opt);
         }
+        // Re-apply saved mic selection after populating options
+        if (savedMicArgs) {
+          micSelect.value = savedMicArgs;
+        }
       }
 
       if (msg.micArgs !== undefined) {
+        savedMicArgs = msg.micArgs;
         micSelect.value = msg.micArgs;
       }
 
@@ -829,10 +1064,54 @@ export class MantraSidebarProvider implements vscode.WebviewViewProvider {
         }
       }
 
+      if (msg.pttActive !== undefined) {
+        if (msg.pttActive) {
+          pttBtn.classList.add('active');
+          pttLabel.textContent = 'Recording...';
+          meterWrap.style.display = '';
+        } else {
+          pttBtn.classList.remove('active');
+          pttLabel.textContent = 'Push to Talk';
+          if (!listening && !testing) {
+            meterWrap.style.display = 'none';
+            meterFill.style.width = '0%';
+          }
+        }
+      }
+
+      if (msg.staleDiffIds !== undefined) {
+        for (const staleId of msg.staleDiffIds) {
+          const el = document.getElementById('undo' + staleId);
+          if (el) {
+            el.classList.add('stale');
+            el.textContent = 'Undo unavailable';
+          }
+        }
+      }
+
+      if (msg.undoableDiffIds !== undefined) {
+        for (const uid of msg.undoableDiffIds) {
+          const el = document.getElementById('undo' + uid);
+          if (el) {
+            el.classList.remove('stale');
+            el.textContent = 'Undo this change';
+          }
+        }
+      }
+
       if (msg.listening !== undefined) {
         listening = msg.listening;
-        toggleLabel.textContent = listening ? 'Pause Listening' : 'Start Listening';
-        toggleHint.textContent = listening ? 'Ctrl+Shift+2' : 'Ctrl+Shift+1';
+        if (listening) {
+          // Recording: show split buttons, hide single button
+          singleBtnWrap.style.display = 'none';
+          splitBtnWrap.style.display = '';
+        } else {
+          // Not recording: show single button, hide split
+          singleBtnWrap.style.display = '';
+          splitBtnWrap.style.display = 'none';
+          toggleLabel.textContent = 'Start Listening';
+          toggleHint.textContent = 'Ctrl+Shift+1';
+        }
         meterWrap.style.display = listening ? '' : (testing ? '' : 'none');
         statusWrap.style.display = listening ? '' : 'none';
         if (!listening && !testing) {

@@ -452,6 +452,7 @@ export class Model {
   private cerebras: Cerebras | null = null;
   private groqApiKey: string = '';
   private deepgramApiKey: string = '';
+  private aquavoiceApiKey: string = '';
   private baseKeyterms: string[] = [];
   private provider: LlmProvider = 'cerebras';
   private memory: string = '';
@@ -479,6 +480,11 @@ export class Model {
   public setGroqApiKey(apiKey: string) {
     console.log('[Mantra] Setting Groq API key:', apiKey ? `${apiKey.slice(0, 8)}...${apiKey.slice(-4)}` : '(empty)');
     this.groqApiKey = apiKey;
+  }
+
+  public setAquavoiceApiKey(apiKey: string) {
+    console.log('[Mantra] Setting Aqua Voice API key:', apiKey ? `${apiKey.slice(0, 8)}...${apiKey.slice(-4)}` : '(empty)');
+    this.aquavoiceApiKey = apiKey;
   }
 
   public hasLlm(): boolean {
@@ -775,6 +781,159 @@ export class Model {
   }
 
   /**
+   * Transcribe a complete PCM audio stream via Aqua Voice (batch HTTP POST).
+   *
+   * Buffers all PCM data from the stream, applies silence-based end-of-speech
+   * detection, wraps the audio in a WAV container, and POSTs it to the
+   * Aqua Voice Avalon API. Returns the final transcript.
+   *
+   * The stream is considered done when:
+   *  - Silence (RMS < threshold) persists for SILENCE_TIMEOUT_MS after speech, OR
+   *  - The input stream ends.
+   */
+  async transcribeBatch(
+    input: NodeJS.ReadableStream,
+    onStatus?: (status: string) => void,
+    silenceTimeoutSec: number = 1.5,
+    isCancelled?: () => boolean
+  ): Promise<string> {
+    const apiKey = this.aquavoiceApiKey || process.env.AQUAVOICE_API_KEY || '';
+    if (!apiKey) throw new Error('Aqua Voice API key not set');
+
+    // Collect PCM chunks, stop on silence after speech
+    const chunks: Buffer[] = [];
+    let totalBytes = 0;
+
+    const SAMPLE_RATE = 16000;
+    const BYTES_PER_SAMPLE = 2; // 16-bit
+    const SILENCE_THRESHOLD = 0.015; // RMS threshold for silence
+    const SILENCE_TIMEOUT_MS = silenceTimeoutSec * 1000;
+    const MIN_SPEECH_BYTES = SAMPLE_RATE * BYTES_PER_SAMPLE * 0.3; // at least 0.3s of audio before considering silence
+
+    await new Promise<void>((resolve) => {
+      let heardSpeech = false;
+      let silenceStart: number | null = null;
+
+      const checkSilence = (chunk: Buffer) => {
+        const samples = Math.floor(chunk.length / BYTES_PER_SAMPLE);
+        if (samples === 0) return;
+        let sum = 0;
+        for (let i = 0; i < samples; i++) {
+          const s = chunk.readInt16LE(i * BYTES_PER_SAMPLE);
+          sum += s * s;
+        }
+        const rms = Math.sqrt(sum / samples) / 32768;
+
+        if (rms >= SILENCE_THRESHOLD) {
+          heardSpeech = true;
+          silenceStart = null;
+        } else if (heardSpeech && totalBytes > MIN_SPEECH_BYTES) {
+          if (!silenceStart) silenceStart = Date.now();
+          else if (Date.now() - silenceStart >= SILENCE_TIMEOUT_MS) {
+            console.log('[Mantra] Aqua Voice: silence detected, finalizing recording');
+            input.removeAllListeners('data');
+            resolve();
+          }
+        }
+      };
+
+      input.on('data', (chunk: Buffer) => {
+        chunks.push(chunk);
+        totalBytes += chunk.length;
+        checkSilence(chunk);
+      });
+
+      input.on('end', () => resolve());
+      input.on('error', () => resolve());
+    });
+
+    if (totalBytes < MIN_SPEECH_BYTES) {
+      console.log('[Mantra] Aqua Voice: too little audio, skipping');
+      return '';
+    }
+
+    // Check if recording was cancelled (user clicked Stop, not Stop & Transcribe)
+    if (isCancelled?.()) {
+      console.log('[Mantra] Aqua Voice: cancelled before API call, discarding audio');
+      return '';
+    }
+
+    onStatus?.('Transcribing...');
+    console.log(`[Mantra] Aqua Voice: sending ${(totalBytes / 1024).toFixed(1)}KB of audio`);
+
+    // Build WAV file in memory
+    const pcmData = Buffer.concat(chunks);
+    const wavHeader = Buffer.alloc(44);
+    const dataSize = pcmData.length;
+    const fileSize = 36 + dataSize;
+    wavHeader.write('RIFF', 0);
+    wavHeader.writeUInt32LE(fileSize, 4);
+    wavHeader.write('WAVE', 8);
+    wavHeader.write('fmt ', 12);
+    wavHeader.writeUInt32LE(16, 16);       // fmt chunk size
+    wavHeader.writeUInt16LE(1, 20);        // PCM format
+    wavHeader.writeUInt16LE(1, 22);        // mono
+    wavHeader.writeUInt32LE(SAMPLE_RATE, 24);
+    wavHeader.writeUInt32LE(SAMPLE_RATE * BYTES_PER_SAMPLE, 28); // byte rate
+    wavHeader.writeUInt16LE(BYTES_PER_SAMPLE, 32); // block align
+    wavHeader.writeUInt16LE(16, 34);       // bits per sample
+    wavHeader.write('data', 36);
+    wavHeader.writeUInt32LE(dataSize, 40);
+    const wavBuffer = Buffer.concat([wavHeader, pcmData]);
+
+    // POST to Aqua Voice API as multipart/form-data
+    const https = await import('https');
+    const boundary = '----MantraBoundary' + Date.now().toString(36);
+    const parts: Buffer[] = [];
+
+    // file part
+    parts.push(Buffer.from(
+      `--${boundary}\r\nContent-Disposition: form-data; name="file"; filename="audio.wav"\r\nContent-Type: audio/wav\r\n\r\n`
+    ));
+    parts.push(wavBuffer);
+    parts.push(Buffer.from('\r\n'));
+
+    // model part
+    parts.push(Buffer.from(
+      `--${boundary}\r\nContent-Disposition: form-data; name="model"\r\n\r\navalon-v1-en\r\n`
+    ));
+
+    parts.push(Buffer.from(`--${boundary}--\r\n`));
+    const body = Buffer.concat(parts);
+
+    const result = await new Promise<{ text?: string }>((resolve, reject) => {
+      const req = https.request({
+        hostname: 'api.aquavoice.com',
+        path: '/api/v1/audio/transcriptions',
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${apiKey}`,
+          'Content-Type': `multipart/form-data; boundary=${boundary}`,
+          'Content-Length': body.length,
+        },
+      }, (res) => {
+        let data = '';
+        res.on('data', (chunk: Buffer) => { data += chunk.toString(); });
+        res.on('end', () => {
+          if (res.statusCode && res.statusCode >= 400) {
+            reject(new Error(`Aqua Voice API returned ${res.statusCode}: ${data}`));
+            return;
+          }
+          try { resolve(JSON.parse(data)); }
+          catch { reject(new Error(`Invalid JSON from Aqua Voice: ${data}`)); }
+        });
+      });
+      req.on('error', reject);
+      req.write(body);
+      req.end();
+    });
+
+    const text = (result.text || '').trim();
+    console.log('[Mantra] Aqua Voice transcript:', text);
+    return text;
+  }
+
+  /**
    * Selection model: determines the scope (line range) for an utterance.
    * Returns 'select' (user wants to highlight code), 'range' (modify a region),
    * or 'full' (whole-file modification or non-modification).
@@ -858,6 +1017,7 @@ export class Model {
       filename?: string;
       editor?: vscode.TextEditor;
       terminalHistory?: string;
+      agentBackend?: 'claude' | 'codex' | 'none';
     }
   ): Promise<RouteResult> {
     console.log('Entering decide function')
@@ -920,8 +1080,14 @@ export class Model {
     const configuredPrompt = (cfg.get<string>('prompt') ?? '').trim();
     const systemBase = configuredPrompt;
 
+    const agentName = ctx.agentBackend === 'claude' ? 'Claude Code' : ctx.agentBackend === 'codex' ? 'Codex' : null;
+    const agentNote = agentName
+      ? `\nIMPORTANT — An AI agent (${agentName}) is active. Prefer "agent" over "modification" for anything non-trivial. Use "modification" ONLY for small, targeted single-file edits (rename a variable, change a loop type, add a single line, remove a comment, etc.). For anything that requires thought, planning, multi-step work, new features, refactoring, or is even slightly complex, use "agent". When ambiguous, default to "agent". NEVER use "question" to answer something the agent could handle — "question" is ONLY for quick factual answers when no agent is available or the user explicitly asks a brief knowledge question like "what does this line do?".`
+      : `\nNo AI agent is active. Use "question" for non-code queries and "modification" for code changes.`;
+
     const system = [
       systemBase,
+      agentNote,
       '',
       'Canonical command catalog (authoritative; choose ONLY from these when outputting type=command):',
       commandList || '- (none provided)'

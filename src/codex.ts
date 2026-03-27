@@ -167,7 +167,7 @@ export function isCodexTerminalActive(): boolean {
 }
 
 /**
- * Open (or re-focus) the Codex CLI terminal.
+ * Open (or re-focus) the Codex terminal.
  * Codex is a standalone CLI (no VS Code extension), so we create a
  * terminal and run the `codex` command in it.
  */
@@ -185,7 +185,7 @@ async function ensureCodexTerminal(): Promise<vscode.Terminal | null> {
   // Check if codex CLI is installed (uses login shell for full PATH)
   if (!checkCliInstalled('codex')) {
     const pick = await vscode.window.showWarningMessage(
-      'Codex CLI is not installed.',
+      'Codex is not installed.',
       'Install via npm',
       'Cancel'
     );
@@ -229,12 +229,12 @@ async function ensureCodexTerminal(): Promise<vscode.Terminal | null> {
 // ──────────────────────────────────────────────
 
 /**
- * Send a prompt to Codex CLI terminal and ensure it executes.
+ * Send a prompt to Codex terminal and ensure it executes.
  */
 export async function sendToCodexPanel(prompt: string): Promise<void> {
   const terminal = await ensureCodexTerminal();
   if (!terminal) {
-    vscode.window.showWarningMessage('Could not open Codex CLI terminal.');
+    vscode.window.showWarningMessage('Could not open Codex terminal.');
     return;
   }
 
@@ -267,7 +267,7 @@ export function typeInCodex(text: string): void {
 }
 
 /**
- * Respond to a Codex CLI prompt.
+ * Respond to a Codex prompt.
  */
 export function respondToCodex(response: string): void {
   if (!_codexTerminal) {
@@ -304,7 +304,7 @@ export function codexArrowDown(): void {
 }
 
 // ──────────────────────────────────────────────
-//  Codex CLI commands (voice-controlled)
+//  Codex commands (voice-controlled)
 // ──────────────────────────────────────────────
 
 async function sendCodexCommand(cmd: string): Promise<void> {
@@ -338,7 +338,7 @@ export function codexInterrupt(): void {
 // ──────────────────────────────────────────────
 
 /**
- * Focus the Codex CLI terminal — opens one if needed.
+ * Focus the Codex terminal — opens one if needed.
  */
 export async function focusCodexPanel(): Promise<void> {
   const terminal = await ensureCodexTerminal();
@@ -347,7 +347,7 @@ export async function focusCodexPanel(): Promise<void> {
     setCodexMode(true);
     return;
   }
-  vscode.window.showWarningMessage('Could not open Codex CLI.');
+  vscode.window.showWarningMessage('Could not open Codex.');
 }
 
 /**
