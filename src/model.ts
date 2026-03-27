@@ -1021,6 +1021,7 @@ export class Model {
       terminalHistory?: string;
       agentBackend?: 'claude' | 'codex' | 'none';
       activityLog?: string;
+      workspaceFiles?: string;
     }
   ): Promise<RouteResult> {
     console.log('Entering decide function')
@@ -1118,6 +1119,13 @@ export class Model {
     if (ctx.terminalHistory) {
       parts.push('Terminal history (recent commands and output):');
       parts.push(ctx.terminalHistory);
+      parts.push('');
+    }
+
+    // Include workspace file listing if available
+    if (ctx.workspaceFiles) {
+      parts.push('Workspace files and folders (use these exact names for terminal commands):');
+      parts.push(ctx.workspaceFiles);
       parts.push('');
     }
 

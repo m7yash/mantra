@@ -24,7 +24,7 @@ import {
 } from './codex';
 import { MantraSidebarProvider, LogEntry } from './sidebarProvider';
 import { exec } from 'child_process';
-import { initTerminalHistory, getLastTerminalOutput, getFullTerminalHistory, formatTerminalContext } from './terminalHistory';
+import { initTerminalHistory, getLastTerminalOutput, getFullTerminalHistory, formatTerminalContext, onTerminalCommand } from './terminalHistory';
 import ffmpegStatic from 'ffmpeg-static';
 import { spawnSync } from 'child_process';
 
@@ -113,6 +113,8 @@ function pushLog(kind: LogEntry['kind'], text: string, diff?: string, diffId?: n
   __lastLogTime = now;
   const time = new Date().toLocaleTimeString('en-US', { hour12: false, hour: '2-digit', minute: '2-digit', second: '2-digit' });
   sidebar.pushLog({ time, kind, text, diff, diffId });
+  // Keep context file in sync after every log entry
+  writeContextFile();
 }
 
 /** Show a quick answer in the Mantra output panel (or info toast as fallback).
@@ -304,6 +306,62 @@ function makeUnifiedDiff(oldText: string, newText: string, filename: string): st
   return `--- ${filename}\n+++ ${filename}\n${hunks.join('\n')}`;
 }
 
+/** Get a compact listing of workspace files/folders for LLM context.
+ *  Uses a tree-like format: groups files by directory to stay compact. */
+let __cachedWorkspaceFiles = '';
+let __workspaceFilesCacheTime = 0;
+const WORKSPACE_CACHE_TTL = 10_000; // 10 seconds
+
+async function getWorkspaceFiles(): Promise<string> {
+  const now = Date.now();
+  if (__cachedWorkspaceFiles && now - __workspaceFilesCacheTime < WORKSPACE_CACHE_TTL) {
+    return __cachedWorkspaceFiles;
+  }
+
+  const folders = vscode.workspace.workspaceFolders;
+  if (!folders || folders.length === 0) return '';
+
+  try {
+    // Find all files, excluding common noise
+    const uris = await vscode.workspace.findFiles(
+      '**/*',
+      '{**/node_modules/**,**/.git/**,**/dist/**,**/build/**,**/__pycache__/**,**/.venv/**,**/venv/**,**/.DS_Store,**/out/**}',
+      500 // cap at 500 files to keep it manageable
+    );
+
+    const rootPath = folders[0].uri.fsPath;
+
+    // Build a set of directories and files
+    const dirs = new Set<string>();
+    const files: string[] = [];
+    for (const uri of uris) {
+      const rel = uri.fsPath.replace(rootPath, '').replace(/^[/\\]/, '');
+      files.push(rel);
+      // Collect parent directories
+      const parts = rel.split(/[/\\]/);
+      for (let i = 1; i < parts.length; i++) {
+        dirs.add(parts.slice(0, i).join('/'));
+      }
+    }
+
+    files.sort();
+    const dirList = Array.from(dirs).sort();
+
+    // Compact format: directories/ then files
+    const lines: string[] = [];
+    if (dirList.length > 0) {
+      lines.push('Directories: ' + dirList.map(d => d + '/').join(', '));
+    }
+    lines.push('Files: ' + files.join(', '));
+
+    __cachedWorkspaceFiles = lines.join('\n');
+    __workspaceFilesCacheTime = now;
+    return __cachedWorkspaceFiles;
+  } catch {
+    return '';
+  }
+}
+
 /** Format the activity log as a string for LLM context. */
 function getActivityLogText(): string {
   const logs = sidebar?.getLogs() || [];
@@ -346,6 +404,13 @@ function writeContextFile(): string {
     sections.push('(No terminal commands have been run yet.)');
   }
   sections.push('');
+
+  // Workspace files (use cached value — async fetch happens in decide())
+  if (__cachedWorkspaceFiles) {
+    sections.push('=== Workspace Files ===');
+    sections.push(__cachedWorkspaceFiles);
+    sections.push('');
+  }
 
   try {
     const tmpFile = path.join(os.tmpdir(), 'mantra-context.txt');
@@ -1667,6 +1732,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 
           // --- decide + apply result ---
           const termHistory = getFullTerminalHistory();
+          const wsFiles = await getWorkspaceFiles();
           let result: any;
           try {
             const isQuickQ = /\bquick\s+question\b/i.test(transcript);
@@ -1678,6 +1744,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
               terminalHistory: termHistory || undefined,
               agentBackend: isQuickQ ? 'none' : getSelectedAgent(),
               activityLog: getActivityLogText() || undefined,
+              workspaceFiles: wsFiles || undefined,
             });
           } catch (err: any) {
             const status = (err && (err.status || err.code)) ?? 0;
@@ -1975,6 +2042,8 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 
   // Track terminal command history for Claude context
   context.subscriptions.push(...initTerminalHistory());
+  // Keep context file in sync after every terminal command
+  onTerminalCommand(() => writeContextFile());
 
   // Focus Claude Code sidebar panel (routes to selected agent)
   const focusClaudeDisposable = vscode.commands.registerCommand('mantra.focusClaude', () => {
@@ -2249,6 +2318,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         const commandsList = canonicalCommandPhrases();
         const filename = editor?.document.fileName.split(/[\\/]/).pop() || '';
         const termHistory = getFullTerminalHistory();
+        const wsFiles = await getWorkspaceFiles();
 
         const isQuickQ = /\bquick\s+question\b/i.test(transcript);
         let result = await model!.decide(transcript, {
@@ -2256,6 +2326,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
           terminalHistory: termHistory || undefined,
           agentBackend: isQuickQ ? 'none' : getSelectedAgent(),
           activityLog: getActivityLogText() || undefined,
+          workspaceFiles: wsFiles || undefined,
         });
 
         if (!result) return;

@@ -11,6 +11,14 @@ const history: TerminalEntry[] = [];
 const MAX_ENTRIES = 50;
 const pendingOutputs = new Map<vscode.TerminalShellExecution, Promise<string>>();
 
+/** Callbacks notified after every terminal command completes. */
+const _onCommandCallbacks: Array<() => void> = [];
+
+/** Register a callback that fires after every terminal command finishes. */
+export function onTerminalCommand(cb: () => void): void {
+  _onCommandCallbacks.push(cb);
+}
+
 /**
  * Start tracking terminal command executions via VS Code shell integration.
  * Captures all commands + output for the session.
@@ -46,6 +54,7 @@ export function initTerminalHistory(): vscode.Disposable[] {
     history.push(entry);
     if (history.length > MAX_ENTRIES) history.shift();
     console.log(`[Mantra] Terminal command finished: "${entry.command}" (exit: ${entry.exitCode ?? '?'})`);
+    for (const cb of _onCommandCallbacks) { try { cb(); } catch {} }
   });
 
   return [d1, d2];

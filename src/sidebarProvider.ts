@@ -155,6 +155,11 @@ export class MantraSidebarProvider implements vscode.WebviewViewProvider {
         vscode.commands.executeCommand(msg.command);
       } else if (msg.type === 'openKeybindings') {
         vscode.commands.executeCommand('workbench.action.openGlobalKeybindings', 'mantra');
+      } else if (msg.type === 'openContextFile') {
+        const os = require('os');
+        const path = require('path');
+        const tmpFile = path.join(os.tmpdir(), 'mantra-context.txt');
+        vscode.commands.executeCommand('vscode.open', vscode.Uri.file(tmpFile));
       } else if (msg.type === 'promptEdit') {
         if (this._onPromptEdit && typeof msg.key === 'string' && typeof msg.text === 'string') {
           this._onPromptEdit(msg.key, msg.text);
@@ -728,6 +733,10 @@ export class MantraSidebarProvider implements vscode.WebviewViewProvider {
     <span class="row-label">Send Context to Agent</span>
     <span class="row-hint" id="sendCtxHint">ON</span>
   </button>
+  <button class="row" id="openContextBtn" title="Open the context file sent to agents">
+    <span class="row-icon">&#128196;</span>
+    <span class="row-label">View Context File</span>
+  </button>
   <button class="row" data-cmd="mantra.openSettings">
     <span class="row-icon">&#9881;</span>
     <span class="row-label">All Settings</span>
@@ -856,6 +865,10 @@ export class MantraSidebarProvider implements vscode.WebviewViewProvider {
 
     document.getElementById('keybindingsBtn').addEventListener('click', () => {
       vscode.postMessage({ type: 'openKeybindings' });
+    });
+
+    document.getElementById('openContextBtn').addEventListener('click', () => {
+      vscode.postMessage({ type: 'openContextFile' });
     });
 
     // Agent backend dropdown
