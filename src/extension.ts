@@ -169,13 +169,16 @@ async function sendToSelectedAgent(prompt: string): Promise<void> {
   }
 }
 
-/** Type text into the selected agent's terminal (no Enter). */
+/** Type text into the selected agent's terminal (no Enter).
+ *  Includes the context file reference so follow-up messages
+ *  also have access to updated session memory & terminal history. */
 function typeInSelectedAgent(text: string): void {
+  const enriched = buildAgentPrompt(text);
   const agent = getSelectedAgent();
   if (agent === 'claude') {
-    typeInClaude(text);
+    typeInClaude(enriched);
   } else {
-    typeInCodex(text);
+    typeInCodex(enriched);
   }
 }
 

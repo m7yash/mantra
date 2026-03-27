@@ -43,7 +43,7 @@ You'll be prompted the first time. Keys are stored in VS Code Secret Storage and
 
 ### 3) Start!
 
-Run **"Mantra: Start Recording"** from the Command Palette, press `Ctrl+Shift+1`, or click **Start Listening** in the Mantra sidebar panel (activity bar icon).
+Run **"Mantra: Start Recording"** from the Command Palette, press `Ctrl+Shift+1`, or click **Hands-Free Mode** in the Mantra sidebar panel (activity bar icon).
 
 ---
 
@@ -288,7 +288,7 @@ While the agent terminal is active:
 
 Mantra adds a panel to the VS Code activity bar. From the sidebar you can:
 
-- **Start / Stop listening** with a single toggle button
+- **Hands-Free Mode / Stop** with a single toggle button
 - **Push to Talk** — hold the button to record, release to transcribe and process. Useful for precise, single-utterance control.
 - **Stop / Stop & Transcribe** (`Ctrl+Shift+2` / `Ctrl+Shift+3`) — while recording, the button splits into two options: stop (discard audio) or stop and transcribe what's been said so far.
 - **Test Microphone** — verify your mic is working with a live volume meter (no STT needed)

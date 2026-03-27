@@ -612,7 +612,7 @@ export class MantraSidebarProvider implements vscode.WebviewViewProvider {
   <!-- Start / Pause toggle (single when idle, splits into two when recording) -->
   <div class="toggle-wrap" id="singleBtnWrap">
     <button class="toggle-btn" id="toggleBtn" style="background:#2ea043;border-color:#2ea043;">
-      <span id="toggleLabel">Start Listening</span>
+      <span id="toggleLabel">Hands-Free Mode</span>
       <span class="toggle-hint" id="toggleHint">Ctrl+Shift+1</span>
     </button>
   </div>
@@ -629,7 +629,7 @@ export class MantraSidebarProvider implements vscode.WebviewViewProvider {
 
   <!-- Push-to-talk -->
   <div style="padding:0 0 6px;">
-    <button class="ptt-btn" id="pttBtn">
+    <button class="ptt-btn" id="pttBtn" style="border-color:#2188ff;color:#58a6ff;">
       <span id="pttLabel">Push to Talk</span>
       <span class="toggle-hint">hold to record</span>
     </button>
@@ -637,7 +637,7 @@ export class MantraSidebarProvider implements vscode.WebviewViewProvider {
 
   <!-- Mic test -->
   <div style="padding:0 0 6px;">
-    <button class="toggle-btn" id="testBtn" style="background:transparent;color:var(--vscode-foreground);border:1px solid var(--vscode-widget-border, rgba(128,128,128,0.25));font-weight:500;font-size:12px;padding:7px;">
+    <button class="toggle-btn" id="testBtn" style="background:transparent;color:#b392f0;border:1px solid rgba(179,146,240,0.35);font-weight:500;font-size:12px;padding:7px;">
       <span id="testLabel">Test Microphone</span>
     </button>
   </div>
@@ -1150,7 +1150,7 @@ export class MantraSidebarProvider implements vscode.WebviewViewProvider {
           // Not recording: show single button, hide split
           singleBtnWrap.style.display = '';
           splitBtnWrap.style.display = 'none';
-          toggleLabel.textContent = 'Start Listening';
+          toggleLabel.textContent = 'Hands-Free Mode';
           toggleHint.textContent = 'Ctrl+Shift+1';
         }
         meterWrap.style.display = listening ? '' : (testing ? '' : 'none');
