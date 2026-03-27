@@ -126,22 +126,12 @@
         "key": "ctrl+shift+3"
       },
       {
-        "command": "mantra.pttStart",
-        "key": "ctrl+shift+4",
-        "when": "!mantra.pttActive"
-      },
-      {
-        "command": "mantra.pttStop",
-        "key": "ctrl+shift+4",
-        "when": "mantra.pttActive"
-      },
-      {
         "command": "mantra.openSettings",
-        "key": "ctrl+shift+5"
+        "key": "ctrl+shift+4"
       },
       {
         "command": "mantra.selectMicrophone",
-        "key": "ctrl+shift+6"
+        "key": "ctrl+shift+5"
       }
     ],
     "configuration": {
@@ -235,6 +225,16 @@
           ],
           "default": "2",
           "description": "Seconds of silence before Aqua Voice considers you done speaking. Higher = less sensitive."
+        },
+        "mantra.sensitivity": {
+          "type": "string",
+          "enum": [
+            "low",
+            "medium",
+            "high"
+          ],
+          "default": "medium",
+          "description": "Microphone sensitivity for silence detection. Low = requires louder speech (noisy environments), High = picks up quieter speech (quiet environments)."
         },
         "mantra.reasoningEffort": {
           "type": "string",

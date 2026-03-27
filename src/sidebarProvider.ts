@@ -15,6 +15,7 @@ export interface SidebarState {
   provider?: string;      // e.g. "Groq" or "Cerebras"
   sttProvider?: string;   // 'deepgram' | 'aquavoice'
   silenceTimeout?: string; // seconds as string, e.g. '1.5'
+  sensitivity?: string;    // 'low' | 'medium' | 'high'
   lastTranscript?: string;
   listening?: boolean;
   testing?: boolean;      // mic test mode
@@ -43,6 +44,7 @@ export class MantraSidebarProvider implements vscode.WebviewViewProvider {
   private _onProviderChange?: (provider: string) => void;
   private _onSttProviderChange?: (provider: string) => void;
   private _onSilenceTimeoutChange?: (timeout: string) => void;
+  private _onSensitivityChange?: (sensitivity: string) => void;
   private _onInstallAgent?: () => void;
   private _onMicChange?: (args: string) => void;
   private _onOpenDiffTab?: (diffId: number) => void;
@@ -81,6 +83,11 @@ export class MantraSidebarProvider implements vscode.WebviewViewProvider {
   /** Register a callback for when the user changes the silence timeout. */
   public onSilenceTimeoutChange(cb: (timeout: string) => void): void {
     this._onSilenceTimeoutChange = cb;
+  }
+
+  /** Register a callback for when the user changes the sensitivity. */
+  public onSensitivityChange(cb: (sensitivity: string) => void): void {
+    this._onSensitivityChange = cb;
   }
 
   /** Register a callback for when the user clicks the install button. */
@@ -173,6 +180,10 @@ export class MantraSidebarProvider implements vscode.WebviewViewProvider {
         if (this._onSilenceTimeoutChange && typeof msg.timeout === 'string') {
           this._onSilenceTimeoutChange(msg.timeout);
         }
+      } else if (msg.type === 'sensitivityChange') {
+        if (this._onSensitivityChange && typeof msg.sensitivity === 'string') {
+          this._onSensitivityChange(msg.sensitivity);
+        }
       } else if (msg.type === 'installAgent') {
         if (this._onInstallAgent) {
           this._onInstallAgent();
@@ -203,6 +214,7 @@ export class MantraSidebarProvider implements vscode.WebviewViewProvider {
           llmProvider: cfg.get<string>('llmProvider') || 'groq',
           sttProvider: cfg.get<string>('sttProvider') || 'deepgram',
           silenceTimeout: cfg.get<string>('silenceTimeout') || '2',
+          sensitivity: cfg.get<string>('sensitivity') || 'medium',
         };
         Object.assign(this._cachedState, settingsState);
 
@@ -604,8 +616,14 @@ export class MantraSidebarProvider implements vscode.WebviewViewProvider {
     </button>
   </div>
   <div class="split-row" id="splitBtnWrap" style="display:none;">
-    <button class="toggle-btn" id="pauseBtn" style="background:var(--vscode-button-secondaryBackground, rgba(128,128,128,0.2));color:var(--vscode-button-secondaryForeground, var(--vscode-foreground));">Stop</button>
-    <button class="toggle-btn" id="stopTranscribeBtn">Stop &amp; Transcribe</button>
+    <button class="toggle-btn" id="pauseBtn" style="background:var(--vscode-button-secondaryBackground, rgba(128,128,128,0.2));color:var(--vscode-button-secondaryForeground, var(--vscode-foreground));">
+      <span>Stop</span>
+      <span class="toggle-hint">Ctrl+Shift+2</span>
+    </button>
+    <button class="toggle-btn" id="stopTranscribeBtn">
+      <span>Stop &amp; Transcribe</span>
+      <span class="toggle-hint">Ctrl+Shift+3</span>
+    </button>
   </div>
 
   <!-- Push-to-talk -->
@@ -705,7 +723,7 @@ export class MantraSidebarProvider implements vscode.WebviewViewProvider {
       <option value="aquavoice">Aqua Voice</option>
     </select>
   </div>
-  <div style="padding:2px 0;" id="silenceWrap">
+  <div style="padding:2px 0;display:none;" id="silenceWrap">
     <div style="font-size:11px;color:var(--vscode-descriptionForeground);padding:2px 0;">Silence Timeout</div>
     <select id="silenceSelect" class="dropdown">
       <option value="0.5">0.5s</option>
@@ -715,6 +733,12 @@ export class MantraSidebarProvider implements vscode.WebviewViewProvider {
       <option value="3">3s</option>
       <option value="4">4s</option>
       <option value="5">5s</option>
+    </select>
+    <div style="font-size:11px;color:var(--vscode-descriptionForeground);padding:4px 0 2px;">Sensitivity</div>
+    <select id="sensitivitySelect" class="dropdown">
+      <option value="low">Low (noisy environment)</option>
+      <option value="medium" selected>Medium (default)</option>
+      <option value="high">High (quiet environment)</option>
     </select>
   </div>
   <div style="padding:2px 0;">
@@ -731,7 +755,7 @@ export class MantraSidebarProvider implements vscode.WebviewViewProvider {
   <button class="row" data-cmd="mantra.openSettings">
     <span class="row-icon">&#9881;</span>
     <span class="row-label">All Settings</span>
-    <span class="row-hint">Ctrl+Shift+3</span>
+    <span class="row-hint">Ctrl+Shift+4</span>
   </button>
   <button class="row" id="keybindingsBtn">
     <span class="row-icon">&#9000;</span>
@@ -887,11 +911,20 @@ export class MantraSidebarProvider implements vscode.WebviewViewProvider {
     // STT Provider dropdown
     sttSelect.addEventListener('change', () => {
       vscode.postMessage({ type: 'sttProviderChange', provider: sttSelect.value });
+      if (silenceWrap) {
+        silenceWrap.style.display = sttSelect.value === 'aquavoice' ? '' : 'none';
+      }
     });
 
     // Silence timeout dropdown
     silenceSelect.addEventListener('change', () => {
       vscode.postMessage({ type: 'silenceTimeoutChange', timeout: silenceSelect.value });
+    });
+
+    // Sensitivity dropdown
+    const sensitivitySelect = document.getElementById('sensitivitySelect');
+    sensitivitySelect.addEventListener('change', () => {
+      vscode.postMessage({ type: 'sensitivityChange', sensitivity: sensitivitySelect.value });
     });
 
     // Microphone dropdown
@@ -1027,6 +1060,10 @@ export class MantraSidebarProvider implements vscode.WebviewViewProvider {
 
       if (msg.silenceTimeout !== undefined) {
         silenceSelect.value = msg.silenceTimeout;
+      }
+
+      if (msg.sensitivity !== undefined) {
+        sensitivitySelect.value = msg.sensitivity;
       }
 
       if (msg.availableMics !== undefined) {

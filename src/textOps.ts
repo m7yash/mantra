@@ -387,8 +387,8 @@ export async function handleCommand(utterance: string, _context?: vscode.Extensi
   // scroll up/down [N] (lines|pages|half page) | page up/down | scroll N (defaults to lines, down)
   {
     if (ed) {
-      // "scroll to the top/bottom" (viewport only; keep cursor position)
-      const mtb = s.match(/^scroll\s+to\s+(?:the\s+)?(top|bottom)$/);
+      // "scroll to the top/bottom [of the file/page/document]" (viewport only; keep cursor position)
+      const mtb = s.match(/^(?:(?:uh|um|ok|okay|hey|please|can you|could you)\s+)*scroll\s+to\s+(?:the\s+)?(top|bottom)(?:\s+of\s+(?:the\s+)?(?:file|page|document|editor|code))?$/);
       if (mtb) {
         const dir = mtb[1] === 'top' ? 'up' : 'down';
         await vscode.commands.executeCommand('editorScroll', {

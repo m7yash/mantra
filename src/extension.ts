@@ -1071,6 +1071,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         e.affectsConfiguration('mantra.aquavoiceApiKey') ||
         e.affectsConfiguration('mantra.sttProvider') ||
         e.affectsConfiguration('mantra.silenceTimeout') ||
+        e.affectsConfiguration('mantra.sensitivity') ||
         e.affectsConfiguration('mantra.reasoningEffort') ||
         e.affectsConfiguration('mantra.agentBackend') ||
         e.affectsConfiguration('mantra.commandsOnly')
@@ -1173,13 +1174,15 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 
           if (isAquaVoice) {
             // Aqua Voice: buffer audio, detect silence, then send batch
+            const mantraCfg = vscode.workspace.getConfiguration('mantra');
             const silenceTimeoutSec = parseFloat(
-              vscode.workspace.getConfiguration('mantra').get<string>('silenceTimeout') || '2'
+              mantraCfg.get<string>('silenceTimeout') || '2'
             ) || 1.5;
+            const sensitivity = mantraCfg.get<string>('sensitivity') || 'medium';
             reportProgress?.('Recording... (speak, then pause to send)');
             transcript = await model!.transcribeBatch(pcm, (status) => {
               reportProgress?.(status);
-            }, silenceTimeoutSec, () => __mantraPaused && !__stopAndTranscribe);
+            }, silenceTimeoutSec, () => __mantraPaused && !__stopAndTranscribe, sensitivity);
           } else {
             // Deepgram: stream audio with live transcription
             transcript = await model!.transcribeStream(pcm, (partial) => {
@@ -1791,6 +1794,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     stopPtt();
   });
 
+
   const configurePromptDisposable = vscode.commands.registerCommand('mantra.configurePrompt', async () => {
     try {
       await vscode.commands.executeCommand('workbench.action.openSettings', 'mantra.prompt');
@@ -1963,6 +1967,16 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     cfg.update('silenceTimeout', timeout, vscode.ConfigurationTarget.Global);
     console.log(`[Mantra] Silence timeout changed to: ${timeout}s`);
     // Stop recording without transcribing when settings change
+    if (__mantraSessionActive) {
+      vscode.commands.executeCommand('mantra.pause');
+    }
+  });
+
+  // Sensitivity change from sidebar
+  sidebar.onSensitivityChange((sensitivity) => {
+    const cfg = vscode.workspace.getConfiguration('mantra');
+    cfg.update('sensitivity', sensitivity, vscode.ConfigurationTarget.Global);
+    console.log(`[Mantra] Sensitivity changed to: ${sensitivity}`);
     if (__mantraSessionActive) {
       vscode.commands.executeCommand('mantra.pause');
     }
@@ -2273,6 +2287,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     const provider = cfg.get<string>('llmProvider') || 'groq';
     const stt = cfg.get<string>('sttProvider') || 'deepgram';
     const silenceTimeout = cfg.get<string>('silenceTimeout') || '2';
+    const sensitivity = cfg.get<string>('sensitivity') || 'medium';
     const installed = agent === 'claude' ? true : checkCliInstalled('codex');
     const cmdOnly = cfg.get<boolean>('commandsOnly', false);
     const micArgs = cfg.get<string>('microphoneInput') || '';
@@ -2286,6 +2301,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       llmProvider: provider,
       sttProvider: stt,
       silenceTimeout,
+      sensitivity,
       commandsOnly: cmdOnly,
       availableMics,
       micArgs,

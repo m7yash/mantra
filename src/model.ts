@@ -795,7 +795,8 @@ export class Model {
     input: NodeJS.ReadableStream,
     onStatus?: (status: string) => void,
     silenceTimeoutSec: number = 1.5,
-    isCancelled?: () => boolean
+    isCancelled?: () => boolean,
+    sensitivity: string = 'medium'
   ): Promise<string> {
     const apiKey = this.aquavoiceApiKey || process.env.AQUAVOICE_API_KEY || '';
     if (!apiKey) throw new Error('Aqua Voice API key not set');
@@ -806,7 +807,8 @@ export class Model {
 
     const SAMPLE_RATE = 16000;
     const BYTES_PER_SAMPLE = 2; // 16-bit
-    const SILENCE_THRESHOLD = 0.015; // RMS threshold for silence
+    // Sensitivity: low = needs louder speech (noisy env), high = picks up quiet speech
+    const SILENCE_THRESHOLD = sensitivity === 'low' ? 0.03 : sensitivity === 'high' ? 0.005 : 0.015;
     const SILENCE_TIMEOUT_MS = silenceTimeoutSec * 1000;
     const MIN_SPEECH_BYTES = SAMPLE_RATE * BYTES_PER_SAMPLE * 0.3; // at least 0.3s of audio before considering silence
 
