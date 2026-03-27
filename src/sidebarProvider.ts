@@ -704,7 +704,6 @@ export class MantraSidebarProvider implements vscode.WebviewViewProvider {
       <option value="claude">Claude Code</option>
       <option value="codex">Codex</option>
     </select>
-    <div id="agentHint" class="agent-hint" style="font-size:10px;color:var(--vscode-descriptionForeground);padding:2px 0;display:none;">Non-edit/command speech → Quick Question</div>
     <div id="installWrap" class="install-wrap" style="display:none;">
       <div class="install-msg" id="installMsg">Agent CLI is not installed.</div>
       <button class="install-btn" id="installBtn">Install via npm</button>
@@ -1027,14 +1026,11 @@ export class MantraSidebarProvider implements vscode.WebviewViewProvider {
 
       if (msg.agentBackend !== undefined) {
         agentSelect.value = msg.agentBackend;
-        const agentHint = document.getElementById('agentHint');
         if (msg.agentBackend === 'none') {
           focusAgentLabel.textContent = 'Agent';
-          if (agentHint) agentHint.style.display = '';
         } else {
           const label = msg.agentBackend === 'codex' ? 'Codex' : 'Claude';
           focusAgentLabel.textContent = label;
-          if (agentHint) agentHint.style.display = 'none';
         }
       }
 

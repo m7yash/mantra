@@ -106,6 +106,25 @@ function pushLog(kind: LogEntry['kind'], text: string, diff?: string, diffId?: n
   sidebar.pushLog({ time, kind, text, diff, diffId });
 }
 
+/** Show a quick answer in the Mantra output panel (or info toast as fallback). */
+function showQuickAnswer(payload: string | undefined, transcript: string): void {
+  const answer = payload;
+  if ((answer || '').toLowerCase().replace(/[^\w\s]/g, '').trim() === 'thank you') return;
+  if (outputChannel && answer) {
+    const sep = '─'.repeat(60);
+    const time = new Date().toLocaleTimeString();
+    const q = transcript.trim();
+    const a = (answer || '').trim();
+    outputChannel.appendLine(`[${time}] Q: ${q}`);
+    outputChannel.appendLine(a);
+    outputChannel.appendLine(sep);
+    outputChannel.show(true);
+  } else {
+    vscode.window.showInformationMessage(answer || '(no answer)');
+  }
+  pushLog('question', (answer || '').trim().substring(0, 200));
+}
+
 /** In-memory agent selection — updated synchronously on dropdown change, avoids async config race. */
 let __selectedAgent: 'claude' | 'codex' | 'none' = vscode.workspace.getConfiguration('mantra').get<string>('agentBackend', 'none') as 'claude' | 'codex' | 'none';
 
@@ -1634,8 +1653,8 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
             if (prompt) {
               const agent = getSelectedAgent();
               if (agent === 'none') {
-                vscode.window.showWarningMessage('No agent selected — select Claude Code or Codex in the sidebar to use agent mode.');
-                pushLog('error', 'No agent selected');
+                // No agent selected — answer as quick question instead
+                showQuickAnswer(result.payload, transcript);
               } else if (isAgentModeActive()) {
                 typeInSelectedAgent(prompt);
                 pushLog(agent, prompt);
@@ -1699,7 +1718,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
               setTimeout(() => notifyStaleDiffs(), 150);
             }
           } else {
-            // "question" type — route to Quick Question panel or to agent.
+            // "question" type — route to Quick Question or to agent.
             // Quick Question if: user said "quick question", OR no agent selected.
             // Otherwise: forward to the selected agent.
             const isQuickQuestion = /\bquick\s+question\b/i.test(transcript);
@@ -1713,22 +1732,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
               }
               pushLog(agent as LogEntry['kind'], transcript);
             } else {
-              // Quick Question mode — show answer in the output panel
-              const answer = result.payload;
-              if ((answer || '').toLowerCase().replace(/[^\w\s]/g, '').trim() === 'thank you') return;
-              if (outputChannel && answer) {
-                const sep = '─'.repeat(60);
-                const time = new Date().toLocaleTimeString();
-                const q = transcript.trim();
-                const a = (answer || '').trim();
-                outputChannel.appendLine(`[${time}] Q: ${q}`);
-                outputChannel.appendLine(a);
-                outputChannel.appendLine(sep);
-                outputChannel.show(true);
-              } else {
-                vscode.window.showInformationMessage(answer || '(no answer)');
-              }
-              pushLog('question', (answer || '').trim().substring(0, 200));
+              showQuickAnswer(result.payload, transcript);
             }
           }
 
