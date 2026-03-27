@@ -292,29 +292,40 @@ function makeUnifiedDiff(oldText: string, newText: string, filename: string): st
   return `--- ${filename}\n+++ ${filename}\n${hunks.join('\n')}`;
 }
 
-/** If the prompt references terminal output/errors, save terminal history to a temp file and reference it. */
-const TERMINAL_CONTEXT_RE = /\b(error|fix|debug|wrong|fail|broke|broken|crash|issue|bug|output|terminal|what happened|went wrong|doesn't work|not working|won't run)\b/i;
-
+/** Save session context (memory + terminal history) to a temp file and reference it.
+ *  The prompt itself stays as the user's raw words — context is separate. */
 function buildClaudePrompt(prompt: string): string {
-  const history = getFullTerminalHistory();
-  if (!history) return prompt;
-  const lastEntry = getLastTerminalOutput();
-  // Include terminal reference if prompt references errors/output OR last command failed
-  if (TERMINAL_CONTEXT_RE.test(prompt) || (lastEntry && lastEntry.exitCode !== undefined && lastEntry.exitCode !== 0)) {
-    try {
-      const fs = require('fs');
-      const os = require('os');
-      const path = require('path');
-      const tmpFile = path.join(os.tmpdir(), 'mantra-terminal-history.txt');
-      fs.writeFileSync(tmpFile, history, 'utf8');
-      return prompt + `\n\nSee terminal history at: ${tmpFile}`;
-    } catch {
-      // If file write fails, just mention the terminal context briefly
-      const last = lastEntry;
-      return prompt + (last ? `\n\nLast command: ${last.command}` + (last.exitCode ? ` (exit ${last.exitCode})` : '') : '');
-    }
+  const fs = require('fs');
+  const os = require('os');
+  const path = require('path');
+
+  const sections: string[] = [];
+
+  // Include conversation memory if available
+  const memory = model?.getMemory?.();
+  if (memory) {
+    sections.push('=== Session Memory ===');
+    sections.push(memory);
+    sections.push('');
   }
-  return prompt;
+
+  // Include terminal history if available
+  const history = getFullTerminalHistory();
+  if (history) {
+    sections.push('=== Terminal History ===');
+    sections.push(history);
+    sections.push('');
+  }
+
+  if (sections.length === 0) return prompt;
+
+  try {
+    const tmpFile = path.join(os.tmpdir(), 'mantra-context.txt');
+    fs.writeFileSync(tmpFile, sections.join('\n'), 'utf8');
+    return prompt + `\n\nFor additional context (session memory and terminal history), see: ${tmpFile}`;
+  } catch {
+    return prompt;
+  }
 }
 
 // ── Microphone enumeration (shared by sidebar dropdown & command palette) ──
