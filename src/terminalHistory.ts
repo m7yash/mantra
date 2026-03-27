@@ -11,6 +11,16 @@ const history: TerminalEntry[] = [];
 const MAX_ENTRIES = 50;
 const pendingOutputs = new Map<vscode.TerminalShellExecution, Promise<string>>();
 
+/** Strip ANSI escape sequences (colors, cursor movement, etc.) from terminal output. */
+function stripAnsi(text: string): string {
+  // eslint-disable-next-line no-control-regex
+  return text.replace(/\x1b\[[0-9;]*[A-Za-z]/g, '')   // CSI sequences (colors, cursor)
+             .replace(/\x1b\][^\x07]*\x07/g, '')       // OSC sequences (title, hyperlinks)
+             .replace(/\x1b[()][0-9A-Za-z]/g, '')      // character set selection
+             .replace(/\x1b[\x20-\x2f]*[\x40-\x7e]/g, '') // other escape sequences
+             .replace(/[\x00-\x08\x0e-\x1f]/g, '');    // remaining control chars (keep \t \n \r)
+}
+
 /** Callbacks notified after every terminal command completes. */
 const _onCommandCallbacks: Array<() => void> = [];
 
@@ -47,7 +57,7 @@ export function initTerminalHistory(): vscode.Disposable[] {
 
     const entry: TerminalEntry = {
       command: e.execution.commandLine.value,
-      output: output.trim(),
+      output: stripAnsi(output).trim(),
       exitCode: e.exitCode,
       timestamp: Date.now(),
     };
