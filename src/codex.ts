@@ -166,6 +166,11 @@ export function isCodexTerminalActive(): boolean {
   return vscode.window.activeTerminal === _codexTerminal;
 }
 
+/** Check if the given terminal is the Codex terminal. */
+export function isCodexTerminal(t: vscode.Terminal): boolean {
+  return !!_codexTerminal && t === _codexTerminal;
+}
+
 /**
  * Open (or re-focus) the Codex terminal.
  * Codex is a standalone CLI (no VS Code extension), so we create a

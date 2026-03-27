@@ -84,6 +84,11 @@ export function isClaudeTerminalActive(): boolean {
   return vscode.window.activeTerminal === _claudeTerminal;
 }
 
+/** Check if the given terminal is the Claude Code terminal. */
+export function isClaudeTerminal(t: vscode.Terminal): boolean {
+  return !!_claudeTerminal && t === _claudeTerminal;
+}
+
 /**
  * Open (or re-focus) the Claude Code terminal via the extension command.
  * Returns the terminal reference once it's created and initialized.

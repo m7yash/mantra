@@ -19,7 +19,7 @@ Discord: https://discord.gg/fmWCScWuUn
 
 1. **Speech-to-text:** Audio is streamed to **Deepgram Flux** (conversational STT with built-in turn detection) or sent as a complete file to **Aqua Voice** (Avalon model). A keyterm list biases recognition toward programming vocabulary and identifiers from your open file. You can switch between STT providers in the sidebar.
 2. **Context-aware routing:** When VS Code is the active window, the transcript goes through the full pipeline — commands, text operations, and LLM routing. **When another app is in the foreground** (Safari, Terminal, etc.), only system-level commands (navigation, scrolling, tab switching, clicking, app management) are processed. VS Code commands and code modifications are never accidentally triggered on other apps.
-3. **LLM routing (VS Code focused):** The transcript + editor context + terminal history + conversation memory is sent to **Groq** (or Cerebras). The LLM classifies the instruction and returns one of five types:
+3. **LLM routing (VS Code focused):** The transcript + editor context + terminal history is sent to **Groq** (or Cerebras). The LLM classifies the instruction and returns one of five types:
    - **command** — runs a VS Code command (75+ supported)
    - **modification** — applies a small, targeted edit to the current file (changes are highlighted in green/red)
    - **question** — shows the answer in a separate panel (only used when no agent is available or the user says "quick question"). When no agent is selected, a note suggests selecting one for better handling of complex requests.
@@ -256,7 +256,7 @@ When no agent is selected (**None**), all requests that would normally be routed
 - **Codex** — Install via `npm install -g @openai/codex`. If the CLI is not found, an install button appears in the sidebar.
 
 ### Sending prompts to the agent
-Say "ask Claude to refactor this function", "tell Codex to add unit tests", "ask agent how to fix that", or "ask LLM to explain this error". All of these — regardless of which name you use — route to whichever agent is currently selected. Mantra's LLM uses conversation memory and terminal history to craft a context-aware prompt, so you can say vague things like "ask Claude how to fix that" and it will resolve "that" to whatever you were just working on.
+Say "ask Claude to refactor this function", "tell Codex to add unit tests", "ask agent how to fix that", or "ask LLM to explain this error". All of these — regardless of which name you use — route to whichever agent is currently selected. When "Send Context to Agent" is enabled, the activity log and terminal history are written to a context file that the agent can reference.
 
 You can also just say what you want without mentioning any agent — "add an AI opponent", "improve the performance", "add authentication" — and it will be routed to the agent automatically.
 
@@ -306,12 +306,10 @@ Mantra adds a panel to the VS Code activity bar. From the sidebar you can:
   - **Model** — select the LLM model (options update based on provider)
   - **Microphone** — pick your input device. Changing the microphone while recording stops the current session (without transcribing) so the new mic is used on next start.
   - **Commands-Only Mode** — toggle with ON/OFF indicator (see below)
-  - **Send Context to AI** — toggle ON/OFF. When enabled (default), session memory and terminal history are written to a temp file and referenced in prompts sent to the agent. Turn off to send only the raw transcript.
+  - **Send Context to Agent** — toggle ON/OFF. When enabled (default), the activity log and terminal history are written to a temp file and referenced in prompts sent to the agent. Turn off to send only the raw transcript.
   - **All Settings** / **Keyboard Shortcuts**
 - **API Keys** — configure Deepgram, Aqua Voice, Groq, and Cerebras keys
-- **Session Memory** — view and edit the running session context that the LLM uses. Edits take effect immediately.
 - **Router Prompt** — view and edit the main LLM system prompt directly in the sidebar
-- **Memory Manager Prompt** — view and edit the prompt that controls how session memory is summarized
 
 ---
 
@@ -327,11 +325,11 @@ This is useful for low-latency command execution without any API calls beyond sp
 
 ---
 
-## Conversation Memory
+## Agent Context
 
-Mantra maintains a running memory of your session. After each interaction, the LLM updates a summary that includes what you asked, what actions were taken, file context, and terminal output. This means later instructions can reference earlier ones naturally — "do the same thing for the other file", "ask Claude how to fix that error from before", etc.
+When "Send Context to Agent" is enabled (the default), Mantra writes the activity log and terminal history to a context file before each agent prompt. The first message to the agent includes an explanation of what Mantra is and a reference to the context file. Follow-up messages include a shorter reminder to re-check the file for updated context.
 
-The session memory and both LLM prompts (router and memory manager) are visible and editable in the sidebar panel.
+The router and selection model prompts are visible and editable in the sidebar panel.
 
 ---
 
@@ -371,9 +369,8 @@ Open **Settings > Extensions > Mantra** to adjust:
 - **Silence Timeout** — (Aqua Voice only) Seconds of silence before auto-transcribing. Default: 2s.
 - **Reasoning Effort** — Low (default), medium, or high.
 - **Prompt** — Customize the LLM system prompt (also editable in the sidebar).
-- **Memory Manager Prompt** — Customize the prompt that summarizes session context (also editable in the sidebar).
 - **Commands Only** — Bypass the LLM entirely. Only pre-mapped commands and text operations work.
-- **Send Context to AI** — Include session memory and terminal history when sending prompts to the AI agent. Default: on.
+- **Send Context to Agent** — Include activity log and terminal history when sending prompts to the AI agent. Default: on.
 - **Microphone Input** — Set via Command Palette > "Mantra: Select Microphone". Advanced users can paste raw FFmpeg input args.
 
 ---
@@ -382,7 +379,7 @@ Open **Settings > Extensions > Mantra** to adjust:
 
 - **Your responsibility:** Do not dictate passwords, tokens, or proprietary text you don't want transmitted. Pause listening when working with sensitive files. DO NOT USE MANTRA WHEN EDITING FILES WITH SENSITIVE CREDENTIALS. If Mantra detects sensitive information in your file, it will warn you before sending it to the LLM.
 - **What goes to the speech model:** A small list of keyterms (command phrases, language keywords, identifiers from the open file) is sent to Deepgram to bias recognition. No full source code is sent to Deepgram or Aqua Voice. When using Aqua Voice, the full audio recording is sent as a file for batch transcription.
-- **What goes to the LLM:** The current file's full contents, file name, cursor context, terminal history, and conversation memory.
+- **What goes to the LLM:** The current file's full contents, file name, cursor context, and terminal history.
 - **Secrets & storage:** API keys are stored in VS Code Secret Storage. No keys are written to disk in plaintext.
 - **For more:** See Deepgram's and Groq's/Cerebras's privacy policies. Other than the API usage described above, Mantra runs entirely locally and does not collect, save, or share any of your data.
 

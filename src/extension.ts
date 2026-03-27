@@ -304,41 +304,32 @@ function makeUnifiedDiff(oldText: string, newText: string, filename: string): st
   return `--- ${filename}\n+++ ${filename}\n${hunks.join('\n')}`;
 }
 
-/** Build the prompt sent to the agent.
- *  The prompt is the user's raw transcript. Context (an explanation of Mantra,
- *  session memory, and terminal history) is written to a temp file and referenced.
- *  Respects the "Send Context to AI" toggle. */
-function buildAgentPrompt(transcript: string): string {
-  const cfg = vscode.workspace.getConfiguration('mantra');
-  if (!cfg.get<boolean>('sendContext', true)) return transcript;
+/** Whether we've already sent the full context explanation to the agent in this session.
+ *  After the first send, follow-ups just remind the agent to re-check the context file. */
+let __agentContextSent = false;
 
+/** Write the context file (activity log + terminal history) and return the path, or '' on failure. */
+function writeContextFile(): string {
   const fs = require('fs');
   const os = require('os');
   const path = require('path');
 
   const sections: string[] = [];
 
-  // Explain what Mantra is and what's happening
-  sections.push('=== About This Prompt ===');
-  sections.push('This prompt was sent by Mantra, a VS Code voice-coding extension that listens');
-  sections.push('to the user\'s voice and routes their speech to you. The transcript below is');
-  sections.push('exactly what the user said (via speech-to-text). Treat it as a natural-language');
-  sections.push('request and act on it. The session memory and terminal history below provide');
-  sections.push('additional context about what the user has been working on.');
-  sections.push('');
-
-  // Include conversation memory if available
-  const memory = model?.getMemory?.();
-  if (memory) {
-    sections.push('=== Session Memory ===');
-    sections.push(memory);
+  // Activity log
+  const logs = sidebar?.getLogs() || [];
+  if (logs.length > 0) {
+    sections.push('=== Activity Log ===');
+    for (const entry of logs) {
+      sections.push(`[${entry.time}] ${entry.kind}: ${entry.text}`);
+    }
   } else {
-    sections.push('=== Session Memory ===');
-    sections.push('(No session memory yet — this is a fresh session.)');
+    sections.push('=== Activity Log ===');
+    sections.push('(No activity yet — this is a fresh session.)');
   }
   sections.push('');
 
-  // Include terminal history if available
+  // Terminal history
   const history = getFullTerminalHistory();
   if (history) {
     sections.push('=== Terminal History ===');
@@ -352,9 +343,34 @@ function buildAgentPrompt(transcript: string): string {
   try {
     const tmpFile = path.join(os.tmpdir(), 'mantra-context.txt');
     fs.writeFileSync(tmpFile, sections.join('\n'), 'utf8');
-    return transcript + `\n\nFor additional context (session memory, terminal history), see: ${tmpFile}`;
+    return tmpFile;
   } catch {
-    return transcript;
+    return '';
+  }
+}
+
+/** Build the prompt sent to the agent.
+ *  The prompt is the user's raw transcript. On the first forwarding, the full context
+ *  explanation is included. On subsequent forwardings, just a reminder to re-check the
+ *  context file (which is always kept up-to-date).
+ *  Respects the "Send context to agent" toggle. */
+function buildAgentPrompt(transcript: string): string {
+  const cfg = vscode.workspace.getConfiguration('mantra');
+  if (!cfg.get<boolean>('sendContext', true)) return transcript;
+
+  const ctxFile = writeContextFile();
+  if (!ctxFile) return transcript;
+
+  if (!__agentContextSent) {
+    __agentContextSent = true;
+    return transcript + '\n\n' +
+      'This prompt was sent by Mantra, a VS Code voice-coding extension that listens to the ' +
+      'user\'s voice and routes their speech to you. The text above is exactly what the user said ' +
+      '(via speech-to-text). Treat it as a natural-language request and act on it.\n' +
+      `For context (activity log, terminal history), see: ${ctxFile}\n` +
+      'This file is updated before every message — re-read it each time you receive a new prompt from Mantra.';
+  } else {
+    return transcript + `\n\n(Mantra context updated: ${ctxFile})`;
   }
 }
 
@@ -1794,12 +1810,6 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
             }
           }
 
-          // Update conversation memory in the background (non-blocking)
-          if (model && result) {
-            model.updateMemory(transcript, result, termHistory || undefined)
-              .then(() => sidebar?.postState({ memory: model!.getMemory() }))
-              .catch(() => {});
-          }
         });
       } catch (err: any) {
         const msg = String(err?.message || err);
@@ -1977,13 +1987,6 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     vscode.window.registerWebviewViewProvider(MantraSidebarProvider.viewType, sidebar)
   );
 
-  // Memory editing from sidebar
-  sidebar.onMemoryEdit((text) => {
-    if (model) {
-      model.setMemory(text);
-      console.log(`[Mantra] Memory edited by user (${text.length} chars)`);
-    }
-  });
 
   // Prompt editing from sidebar
   sidebar.onPromptEdit((key, text) => {
@@ -2326,11 +2329,6 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
           showQuickAnswer(result.payload, transcript, implicitFallback);
         }
 
-        if (model && result) {
-          model.updateMemory(transcript, result, termHistory || undefined)
-            .then(() => sidebar?.postState({ memory: model!.getMemory() }))
-            .catch(() => {});
-        }
       });
     } catch (err: any) {
       console.error('[Mantra] PTT error:', err?.message || err);
@@ -2396,7 +2394,6 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     const availableMics = enumerateMicrophones();
     sidebar.postState({
       routerPrompt: cfg.get<string>('prompt') || '',
-      memoryPrompt: cfg.get<string>('memoryPrompt') || '',
       selectionPrompt: cfg.get<string>('selectionPrompt') || '',
       agentBackend: agent,
       agentInstalled: installed,

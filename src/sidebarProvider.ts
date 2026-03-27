@@ -10,7 +10,6 @@ export interface LogEntry {
 
 export interface SidebarState {
   volume?: number;        // 0-1 RMS level
-  memory?: string;        // conversation memory text
   mic?: string;           // current microphone name
   provider?: string;      // e.g. "Groq" or "Cerebras"
   sttProvider?: string;   // 'deepgram' | 'aquavoice'
@@ -21,13 +20,12 @@ export interface SidebarState {
   testing?: boolean;      // mic test mode
   pttActive?: boolean;    // push-to-talk active
   routerPrompt?: string;  // main LLM system prompt
-  memoryPrompt?: string;  // memory manager system prompt
   selectionPrompt?: string; // selection model system prompt
   agentBackend?: string;  // 'claude' | 'codex'
   agentInstalled?: boolean; // whether selected agent CLI is installed
   llmProvider?: string;   // 'groq' | 'cerebras'
   commandsOnly?: boolean; // commands-only mode toggle
-  sendContext?: boolean;  // send context to AI toggle
+  sendContext?: boolean;  // send context to agent toggle
   availableMics?: Array<{label: string, args: string}>; // enumerated microphones
   micArgs?: string;       // currently selected mic args string
   staleDiffIds?: number[]; // diff IDs that can no longer be undone/redone
@@ -40,7 +38,6 @@ export class MantraSidebarProvider implements vscode.WebviewViewProvider {
   private _view?: vscode.WebviewView;
   private _cachedState: SidebarState = {};
   private _logs: LogEntry[] = [];
-  private _onMemoryEdit?: (text: string) => void;
   private _onPromptEdit?: (key: string, text: string) => void;
   private _onAgentChange?: (agent: string) => void;
   private _onProviderChange?: (provider: string) => void;
@@ -56,11 +53,6 @@ export class MantraSidebarProvider implements vscode.WebviewViewProvider {
   private _onStopAndTranscribe?: () => void;
 
   constructor(private readonly _extensionUri: vscode.Uri) {}
-
-  /** Register a callback for when the user edits memory in the sidebar. */
-  public onMemoryEdit(cb: (text: string) => void): void {
-    this._onMemoryEdit = cb;
-  }
 
   /** Register a callback for when the user edits a prompt in the sidebar. */
   public onPromptEdit(cb: (key: string, text: string) => void): void {
@@ -140,6 +132,11 @@ export class MantraSidebarProvider implements vscode.WebviewViewProvider {
     this._view?.webview.postMessage({ type: 'log', entry });
   }
 
+  /** Get all activity log entries (read-only snapshot). */
+  public getLogs(): readonly LogEntry[] {
+    return this._logs;
+  }
+
   public resolveWebviewView(
     webviewView: vscode.WebviewView,
     _context: vscode.WebviewViewResolveContext,
@@ -161,10 +158,6 @@ export class MantraSidebarProvider implements vscode.WebviewViewProvider {
       } else if (msg.type === 'promptEdit') {
         if (this._onPromptEdit && typeof msg.key === 'string' && typeof msg.text === 'string') {
           this._onPromptEdit(msg.key, msg.text);
-        }
-      } else if (msg.type === 'memoryEdit') {
-        if (this._onMemoryEdit && typeof msg.text === 'string') {
-          this._onMemoryEdit(msg.text);
         }
       } else if (msg.type === 'agentChange') {
         if (this._onAgentChange && typeof msg.agent === 'string') {
@@ -484,29 +477,6 @@ export class MantraSidebarProvider implements vscode.WebviewViewProvider {
     align-items: center;
     justify-content: space-between;
   }
-  .memory-text {
-    font-size: 11px;
-    line-height: 1.45;
-    color: var(--vscode-foreground);
-    background: var(--vscode-input-background);
-    border: 1px solid var(--vscode-input-border, rgba(128,128,128,0.25));
-    border-radius: 4px;
-    padding: 6px 8px;
-    margin: 4px 0;
-    white-space: pre-wrap;
-    word-break: break-word;
-    max-height: 200px;
-    overflow-y: auto;
-    font-family: var(--vscode-font-family);
-    outline: none;
-    resize: vertical;
-  }
-  .memory-empty {
-    font-size: 11px;
-    font-style: italic;
-    color: var(--vscode-disabledForeground);
-    padding: 4px 0;
-  }
   textarea.prompt-area {
     width: 100%;
     min-height: 100px;
@@ -755,7 +725,7 @@ export class MantraSidebarProvider implements vscode.WebviewViewProvider {
   </button>
   <button class="row" data-cmd="mantra.toggleSendContext" id="sendCtxBtn">
     <span class="row-icon">&#128206;</span>
-    <span class="row-label">Send Context to AI</span>
+    <span class="row-label">Send Context to Agent</span>
     <span class="row-hint" id="sendCtxHint">ON</span>
   </button>
   <button class="row" data-cmd="mantra.openSettings">
@@ -791,19 +761,9 @@ export class MantraSidebarProvider implements vscode.WebviewViewProvider {
 
   <div class="divider"></div>
 
-  <!-- Memory -->
-  <div id="memoryWrap" style="display:none;">
-    <div class="section-label">Session Memory (sent to LLM)</div>
-    <div class="memory-text" id="memoryText" contenteditable="true" spellcheck="false"></div>
-    <div style="font-size:10px;color:var(--vscode-descriptionForeground);padding:2px 0;">Edit above to correct or add context for the LLM.</div>
-  </div>
-
   <!-- Prompts -->
   <div class="section-label">Router Prompt</div>
   <textarea class="prompt-area" id="routerPrompt" spellcheck="false" placeholder="Loading..."></textarea>
-
-  <div class="section-label">Memory Manager Prompt</div>
-  <textarea class="prompt-area" id="memoryPrompt" spellcheck="false" placeholder="Loading..."></textarea>
 
   <div class="section-label">Selection Model Prompt</div>
   <textarea class="prompt-area" id="selectionPrompt" spellcheck="false" placeholder="Loading..."></textarea>
@@ -832,10 +792,7 @@ export class MantraSidebarProvider implements vscode.WebviewViewProvider {
     const statusWrap = document.getElementById('statusWrap');
     const providerRow = document.getElementById('providerRow');
     const transcriptRow = document.getElementById('transcriptRow');
-    const memoryWrap = document.getElementById('memoryWrap');
-    const memoryText = document.getElementById('memoryText');
     const routerPromptEl = document.getElementById('routerPrompt');
-    const memoryPromptEl = document.getElementById('memoryPrompt');
     const selectionPromptEl = document.getElementById('selectionPrompt');
     const logWrap = document.getElementById('logWrap');
     const logEmpty = document.getElementById('logEmpty');
@@ -1010,21 +967,8 @@ export class MantraSidebarProvider implements vscode.WebviewViewProvider {
         transcriptRow.textContent = '\\u201c' + msg.lastTranscript + '\\u201d';
       }
 
-      if (msg.memory !== undefined) {
-        if (msg.memory) {
-          memoryText.textContent = msg.memory;
-          memoryWrap.style.display = '';
-        } else {
-          memoryWrap.style.display = 'none';
-        }
-      }
-
       if (msg.routerPrompt !== undefined) {
         routerPromptEl.value = msg.routerPrompt;
-      }
-
-      if (msg.memoryPrompt !== undefined) {
-        memoryPromptEl.value = msg.memoryPrompt;
       }
 
       if (msg.selectionPrompt !== undefined) {
@@ -1175,14 +1119,6 @@ export class MantraSidebarProvider implements vscode.WebviewViewProvider {
       }
     });
 
-    // Debounced memory edit → extension
-    let memoryTimer = null;
-    memoryText.addEventListener('input', () => {
-      clearTimeout(memoryTimer);
-      memoryTimer = setTimeout(() => {
-        vscode.postMessage({ type: 'memoryEdit', text: memoryText.innerText });
-      }, 500);
-    });
 
     // Debounced prompt edits → extension
     function debouncePrompt(el, key) {
@@ -1195,7 +1131,6 @@ export class MantraSidebarProvider implements vscode.WebviewViewProvider {
       });
     }
     debouncePrompt(routerPromptEl, 'prompt');
-    debouncePrompt(memoryPromptEl, 'memoryPrompt');
     debouncePrompt(selectionPromptEl, 'selectionPrompt');
 
     vscode.postMessage({ type: 'ready' });

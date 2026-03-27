@@ -113,7 +113,7 @@
       },
       {
         "command": "mantra.toggleSendContext",
-        "title": "Mantra: Toggle Send Context to AI"
+        "title": "Mantra: Toggle Send Context to Agent"
       }
     ],
     "keybindings": [
@@ -243,7 +243,7 @@
         "mantra.sendContext": {
           "type": "boolean",
           "default": true,
-          "description": "Include session memory and terminal history as context when sending prompts to the AI agent."
+          "description": "Include activity log and terminal history as context when sending prompts to the AI agent."
         },
         "mantra.reasoningEffort": {
           "type": "string",

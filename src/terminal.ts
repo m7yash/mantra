@@ -1,14 +1,25 @@
 import * as vscode from 'vscode';
+import { isClaudeTerminal } from './claude';
+import { isCodexTerminal } from './codex';
 
 /**
  * Get or create a terminal to use.
- * If an active terminal exists, use it; otherwise create a new one.
+ * Skips agent terminals (Claude Code, Codex) — those are for the AI agent, not user commands.
  */
 function getOrCreateTerminal(): vscode.Terminal {
+  // Prefer the active terminal if it's not an agent terminal
   const active = vscode.window.activeTerminal;
-  if (active) return active;
+  if (active && !isClaudeTerminal(active) && !isCodexTerminal(active)) return active;
+
+  // Otherwise find any non-agent terminal
   const terminals = vscode.window.terminals;
-  if (terminals.length > 0) return terminals[terminals.length - 1];
+  for (let i = terminals.length - 1; i >= 0; i--) {
+    if (!isClaudeTerminal(terminals[i]) && !isCodexTerminal(terminals[i])) {
+      return terminals[i];
+    }
+  }
+
+  // No suitable terminal found — create one
   return vscode.window.createTerminal('Mantra Terminal');
 }
 
