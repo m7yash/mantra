@@ -12,7 +12,7 @@ export interface SidebarState {
   volume?: number;        // 0-1 RMS level
   mic?: string;           // current microphone name
   provider?: string;      // e.g. "Groq" or "Cerebras"
-  sttProvider?: string;   // 'deepgram' | 'aquavoice'
+  sttProvider?: string;   // 'deepgram' | 'aquavoice' | 'assemblyai' | 'assemblyai-batch'
   silenceTimeout?: string; // seconds as string, e.g. '1.5'
   sensitivity?: string;    // 'low' | 'medium' | 'high'
   lastTranscript?: string;
@@ -636,7 +636,7 @@ export class MantraSidebarProvider implements vscode.WebviewViewProvider {
   <!-- Activity Log -->
   <div class="section-label">Activity Log</div>
   <div class="log-wrap" id="logWrap">
-    <div class="log-empty" id="logEmpty">No activity yet. Start listening to see logs.</div>
+    <div class="log-empty" id="logEmpty">No activity yet.</div>
   </div>
 
   <div class="divider"></div>
@@ -697,6 +697,8 @@ export class MantraSidebarProvider implements vscode.WebviewViewProvider {
     <select id="sttSelect" class="dropdown">
       <option value="deepgram">Deepgram</option>
       <option value="aquavoice">Aqua Voice</option>
+      <option value="assemblyai">AssemblyAI (Streaming)</option>
+      <option value="assemblyai-batch">AssemblyAI (Batch)</option>
     </select>
   </div>
   <div style="padding:2px 0;display:none;" id="silenceWrap">
@@ -766,6 +768,10 @@ export class MantraSidebarProvider implements vscode.WebviewViewProvider {
   <button class="row" data-cmd="mantra.editAquavoiceApiKey">
     <span class="row-icon">&#128273;</span>
     <span class="row-label">Aqua Voice</span>
+  </button>
+  <button class="row" data-cmd="mantra.editAssemblyaiApiKey">
+    <span class="row-icon">&#128273;</span>
+    <span class="row-label">AssemblyAI</span>
   </button>
 
   <div class="divider"></div>
@@ -890,7 +896,8 @@ export class MantraSidebarProvider implements vscode.WebviewViewProvider {
     sttSelect.addEventListener('change', () => {
       vscode.postMessage({ type: 'sttProviderChange', provider: sttSelect.value });
       if (silenceWrap) {
-        silenceWrap.style.display = sttSelect.value === 'aquavoice' ? '' : 'none';
+        const isBatch = sttSelect.value === 'aquavoice' || sttSelect.value === 'assemblyai-batch';
+        silenceWrap.style.display = isBatch ? '' : 'none';
       }
     });
 
@@ -963,7 +970,7 @@ export class MantraSidebarProvider implements vscode.WebviewViewProvider {
       }
 
       if (msg.provider !== undefined && msg.provider) {
-        const sttLabel = msg.sttProvider === 'aquavoice' ? 'Aqua Voice' : 'Deepgram';
+        const sttLabel = msg.sttProvider === 'aquavoice' ? 'Aqua Voice' : msg.sttProvider === 'assemblyai' ? 'AssemblyAI' : msg.sttProvider === 'assemblyai-batch' ? 'AssemblyAI' : 'Deepgram';
         providerRow.textContent = msg.provider + ' · ' + sttLabel;
       }
       if (msg.sttProvider !== undefined) {
@@ -971,7 +978,7 @@ export class MantraSidebarProvider implements vscode.WebviewViewProvider {
         const currentText = providerRow.textContent || '';
         const llmPart = currentText.split(' · ')[0] || '';
         if (llmPart) {
-          const sttLabel = msg.sttProvider === 'aquavoice' ? 'Aqua Voice' : 'Deepgram';
+          const sttLabel = msg.sttProvider === 'aquavoice' ? 'Aqua Voice' : msg.sttProvider === 'assemblyai' ? 'AssemblyAI' : msg.sttProvider === 'assemblyai-batch' ? 'AssemblyAI' : 'Deepgram';
           providerRow.textContent = llmPart + ' · ' + sttLabel;
         }
       }
@@ -1014,9 +1021,10 @@ export class MantraSidebarProvider implements vscode.WebviewViewProvider {
 
       if (msg.sttProvider !== undefined) {
         sttSelect.value = msg.sttProvider;
-        // Only show silence timeout for Aqua Voice (batch mode)
+        // Only show silence timeout for batch mode providers
         if (silenceWrap) {
-          silenceWrap.style.display = msg.sttProvider === 'aquavoice' ? '' : 'none';
+          const isBatch = msg.sttProvider === 'aquavoice' || msg.sttProvider === 'assemblyai-batch';
+          silenceWrap.style.display = isBatch ? '' : 'none';
         }
       }
 
