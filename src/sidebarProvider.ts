@@ -611,17 +611,17 @@ export class MantraSidebarProvider implements vscode.WebviewViewProvider {
 
   <!-- Start / Pause toggle (single when idle, splits into two when recording) -->
   <div class="toggle-wrap" id="singleBtnWrap">
-    <button class="toggle-btn" id="toggleBtn">
+    <button class="toggle-btn" id="toggleBtn" style="background:#2ea043;border-color:#2ea043;">
       <span id="toggleLabel">Start Listening</span>
       <span class="toggle-hint" id="toggleHint">Ctrl+Shift+1</span>
     </button>
   </div>
   <div class="split-row" id="splitBtnWrap" style="display:none;">
-    <button class="toggle-btn" id="pauseBtn" style="background:var(--vscode-button-secondaryBackground, rgba(128,128,128,0.2));color:var(--vscode-button-secondaryForeground, var(--vscode-foreground));">
+    <button class="toggle-btn" id="pauseBtn" style="background:#c93c37;border-color:#c93c37;color:#fff;">
       <span>Stop</span>
       <span class="toggle-hint">Ctrl+Shift+2</span>
     </button>
-    <button class="toggle-btn" id="stopTranscribeBtn">
+    <button class="toggle-btn" id="stopTranscribeBtn" style="background:#d29922;border-color:#d29922;color:#fff;">
       <span>Stop &amp; Transcribe</span>
       <span class="toggle-hint">Ctrl+Shift+3</span>
     </button>
