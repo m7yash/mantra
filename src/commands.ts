@@ -4,7 +4,7 @@ export type CommandSpec = {
   id: string;
   name: string;
   aliases?: string[];
-  category?: 'file' | 'edit' | 'view' | 'navigate' | 'search' | 'terminal' | 'debug';
+  category?: 'file' | 'edit' | 'view' | 'navigate' | 'search' | 'terminal' | 'debug' | 'git';
   description?: string;
 };
 
@@ -61,8 +61,10 @@ const SPECS: CommandSpec[] = [
   { id: 'editor.action.insertCursorBelow', name: 'add cursor below', category: 'edit' },
 
   // Folding / wrapping
-  { id: 'editor.foldAll', name: 'fold all', category: 'view' },
-  { id: 'editor.unfoldAll', name: 'unfold all', category: 'view' },
+  { id: 'editor.fold', name: 'fold', aliases: ['fold at cursor', 'collapse'], category: 'view' },
+  { id: 'editor.unfold', name: 'unfold', aliases: ['unfold at cursor', 'expand'], category: 'view' },
+  { id: 'editor.foldAll', name: 'fold all', aliases: ['collapse all'], category: 'view' },
+  { id: 'editor.unfoldAll', name: 'unfold all', aliases: ['expand all'], category: 'view' },
   { id: 'editor.action.toggleWordWrap', name: 'toggle word wrap', aliases: ['word wrap'], category: 'view' },
 
   // Find/Replace
@@ -71,9 +73,7 @@ const SPECS: CommandSpec[] = [
   { id: 'workbench.action.findInFiles', name: 'find in files', category: 'search' },
   { id: 'workbench.action.replaceInFiles', name: 'replace in files', category: 'search' },
 
-  // Navigation / tabs
-  { id: 'workbench.action.navigateBack', name: 'back', aliases: ['go back', 'navigate back'], category: 'navigate' },
-  { id: 'workbench.action.navigateForward', name: 'forward', aliases: ['go forward', 'navigate forward'], category: 'navigate' },
+  // Navigation / tabs (back/forward moved to systemCommands.ts as system-level Cmd+[/])
   { id: 'workbench.action.nextEditor', name: 'next tab', aliases: ['next editor', 'switch to next tab'], category: 'navigate' },
   { id: 'workbench.action.previousEditor', name: 'previous tab', aliases: ['prev tab', 'previous editor', 'switch to previous tab'], category: 'navigate' },
   { id: 'workbench.action.openEditorAtIndex1', name: 'tab one', aliases: ['first tab'], category: 'navigate' },
@@ -143,6 +143,58 @@ const SPECS: CommandSpec[] = [
   { id: 'workbench.action.debug.stepOver', name: 'step over', category: 'debug' },
   { id: 'workbench.action.debug.stepInto', name: 'step into', category: 'debug' },
   { id: 'workbench.action.debug.stepOut', name: 'step out', category: 'debug' },
+
+  // Error / change navigation
+  { id: 'editor.action.marker.nextInFiles', name: 'next error', aliases: ['go to next error', 'next problem'], category: 'navigate' },
+  { id: 'editor.action.marker.prevInFiles', name: 'previous error', aliases: ['go to previous error', 'prev error', 'previous problem'], category: 'navigate' },
+  { id: 'workbench.action.editor.nextChange', name: 'next change', aliases: ['go to next change', 'next hunk', 'next diff'], category: 'navigate' },
+  { id: 'workbench.action.editor.previousChange', name: 'previous change', aliases: ['go to previous change', 'prev change', 'previous hunk', 'prev diff'], category: 'navigate' },
+
+  // IntelliSense
+  { id: 'editor.action.showHover', name: 'show hover', aliases: ['hover', 'show tooltip'], category: 'edit' },
+  { id: 'editor.action.triggerSuggest', name: 'trigger suggest', aliases: ['show suggestions', 'autocomplete', 'suggest'], category: 'edit' },
+  { id: 'acceptSelectedSuggestion', name: 'accept suggestion', aliases: ['accept autocomplete'], category: 'edit' },
+  { id: 'editor.action.goToTypeDefinition', name: 'go to type definition', aliases: ['goto type definition', 'type definition'], category: 'navigate' },
+  { id: 'workbench.action.gotoSymbol', name: 'go to symbol', aliases: ['goto symbol', 'symbol search'], category: 'navigate' },
+
+  // Git
+  { id: 'git.stage', name: 'stage file', aliases: ['git stage', 'stage changes', 'git add'], category: 'git' },
+  { id: 'git.stageAll', name: 'stage all', aliases: ['git stage all', 'stage all changes', 'git add all'], category: 'git' },
+  { id: 'git.unstage', name: 'unstage file', aliases: ['git unstage', 'unstage changes'], category: 'git' },
+  { id: 'git.commit', name: 'commit', aliases: ['git commit', 'commit changes'], category: 'git' },
+  { id: 'git.push', name: 'push', aliases: ['git push', 'push changes'], category: 'git' },
+  { id: 'git.pull', name: 'pull', aliases: ['git pull', 'pull changes'], category: 'git' },
+  { id: 'git.checkout', name: 'checkout branch', aliases: ['git checkout', 'switch branch', 'change branch'], category: 'git' },
+  { id: 'git.openChange', name: 'show diff', aliases: ['git diff', 'show changes', 'view diff'], category: 'git' },
+  { id: 'git.stash', name: 'stash', aliases: ['git stash', 'stash changes'], category: 'git' },
+  { id: 'git.stashPop', name: 'pop stash', aliases: ['git stash pop', 'unstash'], category: 'git' },
+
+  // View (additional)
+  { id: 'workbench.action.toggleFullScreen', name: 'toggle fullscreen', aliases: ['fullscreen'], category: 'view' },
+  { id: 'workbench.actions.view.problems', name: 'show problems', aliases: ['problems panel', 'show errors'], category: 'view' },
+  { id: 'notifications.showList', name: 'show notifications', aliases: ['notifications'], category: 'view' },
+  { id: 'notifications.clearAll', name: 'clear notifications', aliases: ['dismiss notifications'], category: 'view' },
+  { id: 'breadcrumbs.toggle', name: 'toggle breadcrumbs', aliases: ['breadcrumbs'], category: 'view' },
+
+  // File utilities
+  { id: 'workbench.files.action.compareWithSaved', name: 'compare with saved', aliases: ['diff with saved'], category: 'file' },
+  { id: 'revealFileInOS', name: 'reveal in finder', aliases: ['show in finder', 'reveal in explorer', 'show in explorer'], category: 'file' },
+  { id: 'copyFilePath', name: 'copy file path', aliases: ['copy path', 'copy full path'], category: 'file' },
+  { id: 'copyRelativeFilePath', name: 'copy relative path', aliases: ['copy relative file path'], category: 'file' },
+  { id: 'markdown.showPreview', name: 'markdown preview', aliases: ['preview markdown', 'show preview'], category: 'file' },
+  { id: 'workbench.action.files.setActiveEditorReadonlyInSession', name: 'toggle read only', aliases: ['read only', 'set read only'], category: 'file' },
+
+  // Tasks
+  { id: 'workbench.action.tasks.runTask', name: 'run task', aliases: ['tasks'], category: 'terminal' },
+  { id: 'workbench.action.tasks.build', name: 'run build task', aliases: ['build task', 'build'], category: 'terminal' },
+  { id: 'workbench.action.tasks.test', name: 'run test task', aliases: ['test task'], category: 'terminal' },
+
+  // Terminal (additional)
+  { id: 'workbench.action.terminal.clear', name: 'clear terminal', aliases: ['clear console'], category: 'terminal' },
+  { id: 'workbench.action.terminal.scrollUp', name: 'terminal scroll up', aliases: ['scroll terminal up'], category: 'terminal' },
+  { id: 'workbench.action.terminal.scrollDown', name: 'terminal scroll down', aliases: ['scroll terminal down'], category: 'terminal' },
+  { id: 'workbench.action.terminal.scrollToTop', name: 'terminal scroll to top', aliases: ['scroll terminal to top'], category: 'terminal' },
+  { id: 'workbench.action.terminal.scrollToBottom', name: 'terminal scroll to bottom', aliases: ['scroll terminal to bottom'], category: 'terminal' },
 ];
 
 const ALIAS_TO_ID = new Map<string, string>();

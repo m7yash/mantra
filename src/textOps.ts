@@ -507,6 +507,100 @@ export async function handleCommand(utterance: string, _context?: vscode.Extensi
     if (ed && /^indent( lines?)?$/.test(s)) { await indentSelection(ed, false); return true; }
     if (ed && /^(outdent|dedent)( lines?)?$/.test(s)) { await indentSelection(ed, true); return true; }
 
+    // ---------- Selection at cursor ----------
+
+    // select word / select current word
+    if (ed && /^select\s+(?:current\s+)?word$/.test(s)) {
+      const pos = ed.selection.active;
+      const wordRange = ed.document.getWordRangeAtPosition(pos);
+      if (wordRange) ed.selection = new vscode.Selection(wordRange.start, wordRange.end);
+      return true;
+    }
+    // select current line / select this line
+    if (ed && /^select\s+(?:current|this)\s+line$/.test(s)) {
+      const ln = ed.selection.active.line;
+      selectLines(ed, ln + 1, ln + 1);
+      return true;
+    }
+    // select to end/start of line
+    if (ed && /^select\s+to\s+(end|start|beginning)\s+of\s+line$/.test(s)) {
+      await vscode.commands.executeCommand(s.includes('end') ? 'cursorLineEndSelect' : 'cursorHomeSelect');
+      return true;
+    }
+
+    // ---------- Cursor movement ----------
+
+    // move to start/end of word
+    if (/^move\s+to\s+(start|end|beginning)\s+of\s+word$/.test(s)) {
+      await vscode.commands.executeCommand(s.includes('end') ? 'cursorWordEndRight' : 'cursorWordStartLeft');
+      return true;
+    }
+    // move to start/end of line
+    if (/^move\s+to\s+(start|end|beginning)\s+of\s+line$/.test(s)) {
+      await vscode.commands.executeCommand(s.includes('end') ? 'cursorLineEnd' : 'cursorHome');
+      return true;
+    }
+
+    // ---------- Delete word ----------
+
+    if (ed && /^delete\s+word(\s+(forward|backward|back))?$/.test(s)) {
+      await vscode.commands.executeCommand(/forward/.test(s) ? 'deleteWordRight' : 'deleteWordLeft');
+      return true;
+    }
+
+    // ---------- Line transforms ----------
+
+    // join lines
+    if (/^join\s+lines?$/.test(s)) {
+      await vscode.commands.executeCommand('editor.action.joinLines');
+      return true;
+    }
+    // sort lines
+    if (/^sort\s+lines?(\s+ascending|\s+descending)?$/.test(s)) {
+      await vscode.commands.executeCommand(
+        /descending/.test(s) ? 'editor.action.sortLinesDescending' : 'editor.action.sortLinesAscending'
+      );
+      return true;
+    }
+    // transform case
+    if (/^(uppercase|upper\s*case|to\s+upper)$/.test(s)) {
+      await vscode.commands.executeCommand('editor.action.transformToUppercase'); return true;
+    }
+    if (/^(lowercase|lower\s*case|to\s+lower)$/.test(s)) {
+      await vscode.commands.executeCommand('editor.action.transformToLowercase'); return true;
+    }
+    if (/^(title\s*case|to\s+title)$/.test(s)) {
+      await vscode.commands.executeCommand('editor.action.transformToTitlecase'); return true;
+    }
+    // trim trailing whitespace
+    if (/^trim\s+(trailing\s+)?whitespace$/.test(s)) {
+      await vscode.commands.executeCommand('editor.action.trimTrailingWhitespace'); return true;
+    }
+
+    // ---------- Terminal operations ----------
+
+    // kill process / control c / ctrl c
+    if (/^(kill\s+(?:terminal\s+)?process|control\s+c|ctrl\s+c|cancel\s+process|stop\s+process)$/.test(s)) {
+      const terminal = vscode.window.activeTerminal;
+      if (terminal) terminal.sendText('\x03', false);
+      return true;
+    }
+    // tab complete
+    if (/^tab\s*(complete|completion)?$/.test(s)) {
+      const terminal = vscode.window.activeTerminal;
+      if (terminal) terminal.sendText('\t', false);
+      return true;
+    }
+    // run last command / repeat last command / rerun last command
+    if (/^(run|repeat|re-?run)\s+(last|previous)\s+command$/.test(s)) {
+      const terminal = vscode.window.activeTerminal;
+      if (terminal) {
+        terminal.sendText('\x1b[A', false); // up arrow
+        terminal.sendText('', true);         // enter
+      }
+      return true;
+    }
+
     // ---------- Shared mapped commands (simple, parameterless) ----------
     if (await tryExecuteMappedCommand(utterance)) return true;
 

@@ -249,13 +249,30 @@ function seedKeytermsBase(): string[] {
     'show command palette', 'command palette', 'quick open', 'open recent', 'toggle explorer', 'focus explorer',
     'focus search', 'focus source control', 'focus debug', 'focus extensions', 'focus problems', 'focus output', 'focus terminal',
     'go to definition', 'peek definition', 'go to references', 'go to implementation', 'jump to bracket',
+    'go to type definition', 'go to symbol', 'show hover', 'trigger suggest', 'autocomplete', 'accept suggestion',
     'next tab', 'previous tab', 'move tab left', 'move tab right', 'split editor', 'toggle split layout',
     'toggle breakpoint', 'add breakpoint', 'remove breakpoint', 'enable breakpoint', 'disable breakpoint',
     'start debugging', 'stop debugging', 'restart debugging', 'continue', 'step over', 'step into', 'step out',
     'format document', 'format selection', 'organize imports', 'fix imports',
     'expand selection', 'shrink selection', 'delete line', 'duplicate line', 'join lines', 'transpose letters',
-    'select all', 'select word', 'select line', 'move line up', 'move line down',
-    'toggle comment', 'toggle block comment', 'toggle line comment'
+    'select all', 'select word', 'select line', 'select current word', 'select current line',
+    'select to end of line', 'select to start of line',
+    'move to start of word', 'move to end of word', 'move to start of line', 'move to end of line',
+    'move line up', 'move line down',
+    'delete word', 'delete word forward', 'delete word backward',
+    'toggle comment', 'toggle block comment', 'toggle line comment',
+    'next error', 'previous error', 'next problem', 'previous problem',
+    'next change', 'previous change', 'next diff', 'previous diff',
+    'fold', 'unfold', 'fold all', 'unfold all', 'fold at cursor', 'unfold at cursor',
+    'toggle fullscreen', 'show problems', 'show notifications', 'clear notifications', 'toggle breadcrumbs',
+    'compare with saved', 'reveal in finder', 'copy file path', 'copy relative path',
+    'markdown preview', 'toggle read only',
+    'run task', 'run build task', 'run test task',
+    'sort lines', 'sort lines ascending', 'sort lines descending',
+    'uppercase', 'lowercase', 'title case', 'to upper', 'to lower', 'to title',
+    'trim whitespace', 'trim trailing whitespace',
+    'clear terminal', 'terminal scroll up', 'terminal scroll down',
+    'terminal scroll to top', 'terminal scroll to bottom'
   ];
   for (const s of ideOps) set.add(s);
 
@@ -268,7 +285,68 @@ function seedKeytermsBase(): string[] {
   ];
   for (const s of cliOps) set.add(s);
 
-  // 4b) Mantra-specific terms — voice control keywords that must be recognized accurately
+  // 4b) Git operations
+  const gitOps = [
+    'stage file', 'git stage', 'stage changes', 'git add', 'stage all', 'git stage all', 'git add all',
+    'unstage file', 'git unstage', 'unstage changes',
+    'commit', 'git commit', 'commit changes',
+    'push', 'git push', 'push changes',
+    'pull', 'git pull', 'pull changes',
+    'checkout branch', 'git checkout', 'switch branch', 'change branch',
+    'show diff', 'git diff', 'view diff',
+    'stash', 'git stash', 'stash changes',
+    'pop stash', 'git stash pop', 'unstash',
+  ];
+  for (const s of gitOps) set.add(s);
+
+  // 4c) System / browser / window commands
+  const systemTerms = [
+    // browser navigation
+    'go back', 'go forward', 'back', 'forward',
+    'refresh', 'refresh page', 'hard refresh', 'reload',
+    'new tab', 'close tab', 'reopen tab', 'reopen closed tab',
+    'next tab', 'previous tab', 'last tab',
+    'first tab', 'second tab', 'third tab', 'fourth tab', 'fifth tab',
+    'tab one', 'tab two', 'tab three', 'tab four', 'tab five',
+    'address bar', 'url bar', 'bookmark page', 'bookmark this',
+    'dev tools', 'developer tools', 'inspect element', 'inspect',
+    'open console', 'javascript console', 'view source', 'page source',
+    // window / app management
+    'open VS Code', 'open versus code', 'open IDE', 'open code',
+    'open Visual Studio Code', 'switch to', 'click',
+    'minimize', 'minimize window', 'close window',
+    'full screen', 'next window', 'previous window',
+    'hide app', 'show desktop', 'mission control',
+    // mouse
+    'move mouse', 'move cursor', 'click', 'double click', 'right click',
+    // key simulation
+    'press enter', 'press escape', 'press tab', 'press space',
+    'press delete', 'press backspace',
+    'press up', 'press down', 'press left', 'press right',
+    'type', 'dictate',
+    // terminal shortcuts
+    'kill process', 'control c', 'control d', 'control z', 'control r',
+    'control a', 'control e', 'control u', 'control w',
+    'interrupt', 'clear terminal', 'reverse search', 'search history',
+    'exit terminal', 'exit shell', 'clear line', 'delete word',
+    'tab complete', 'run last command', 'repeat last command',
+    // system utilities
+    'spotlight', 'search computer', 'screenshot', 'take screenshot',
+    'screenshot selection', 'lock screen',
+    // scrolling & navigation
+    'arrow up', 'arrow down', 'arrow left', 'arrow right',
+    'scroll up', 'scroll down', 'scroll up a lot', 'scroll down a lot',
+    'page up', 'page down', 'scroll to top', 'scroll to bottom',
+    'up five times', 'down five times', 'up ten times', 'down ten times',
+    'select all', 'select word', 'select line',
+    'select to end', 'select to start',
+    'zoom in', 'zoom out', 'reset zoom',
+    // finder
+    'show hidden files', 'go to folder', 'new folder',
+  ];
+  for (const s of systemTerms) set.add(s);
+
+  // 4d) Mantra-specific terms — voice control keywords that must be recognized accurately
   const mantraTerms = [
     'Claude', 'ask Claude', 'tell Claude', 'hey Claude', 'focus Claude',
     'Codex', 'codex', 'ask Codex', 'tell Codex', 'hey Codex', 'focus Codex',

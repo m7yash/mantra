@@ -18,13 +18,14 @@ Discord: https://discord.gg/fmWCScWuUn
 ## How It Works
 
 1. **Speech-to-text:** Audio is streamed to **Deepgram Flux** (conversational STT with built-in turn detection). A keyterm list biases recognition toward programming vocabulary and identifiers from your open file.
-2. **LLM routing:** The transcript + editor context + terminal history + conversation memory is sent to **Groq** (or Cerebras). The LLM classifies the instruction and returns one of five types:
+2. **Context-aware routing:** When VS Code is the active window, the transcript goes through the full pipeline — commands, text operations, and LLM routing. **When another app is in the foreground** (Safari, Terminal, etc.), only system-level commands (navigation, scrolling, tab switching, clicking, app management) are processed. VS Code commands and code modifications are never accidentally triggered on other apps.
+3. **LLM routing (VS Code focused):** The transcript + editor context + terminal history + conversation memory is sent to **Groq** (or Cerebras). The LLM classifies the instruction and returns one of five types:
    - **command** — runs a VS Code command (75+ supported)
    - **modification** — applies an edit to the current file (changes are highlighted in green/red)
    - **question** — shows the answer in a separate panel
    - **terminal** — translates natural language to a shell command and executes it
    - **agent** — forwards an intelligent, context-aware prompt to the selected AI agent (Claude Code or Codex CLI)
-3. **Pre-LLM shortcuts:** Common phrases like "undo", "save", "scroll down", "enter", "delete", "focus editor", "ask Claude ...", and keyboard shortcuts are handled instantly without waiting for the LLM.
+4. **Pre-LLM shortcuts:** Common phrases like "undo", "save", "scroll down", "enter", "delete", "focus editor", "ask Claude ...", and keyboard shortcuts are handled instantly without waiting for the LLM.
 
 ---
 
@@ -47,19 +48,19 @@ Run **"Mantra: Start Recording"** from the Command Palette, press `Ctrl+Shift+1`
 
 ## What You Can Say
 
-### Code editing
+### Code editing (VS Code focused)
 - "create a terminal-based tic tac toe game"
 - "change this to a while loop"
 - "add a helper function to validate user input"
 - "put getters and setters"
 - "for i in range len nums print nums i" (raw code dictation)
 
-### Questions
+### Questions (VS Code focused)
 - "what does this function do?"
 - "how should I refactor this?"
 - "explain this line"
 
-### IDE commands
+### IDE commands (VS Code focused)
 - "undo", "redo", "save", "format document"
 - "close this file", "open utils dot java"
 - "select lines 4 to 19", "go to line 20"
@@ -67,8 +68,9 @@ Run **"Mantra: Start Recording"** from the Command Palette, press `Ctrl+Shift+1`
 - "scroll down", "scroll up 5 lines", "page up"
 - "toggle sidebar", "zen mode", "zoom in"
 - "focus editor", "focus terminal", "focus explorer"
+- "next tab", "previous tab", "first tab", "tab three"
 
-### Terminal commands
+### Terminal commands (VS Code focused)
 - "run this file" → `python3 main.py`
 - "create a virtual environment" → `python3 -m venv venv`
 - "install the requests library" → `pip3 install requests`
@@ -76,19 +78,164 @@ Run **"Mantra: Start Recording"** from the Command Palette, press `Ctrl+Shift+1`
 
 Terminal commands are **executed by default**. If you want to just type without executing, say something like "create a virtual environment **but don't run it**" or "type it out **and wait**".
 
-### Keyboard shortcuts (macOS)
+### Keyboard shortcuts (macOS, any app)
 Any modifier+key combo spoken naturally is executed via the system:
 - "command B" → Cmd+B
 - "control shift P" → Ctrl+Shift+P
 - "command shift F" → Cmd+Shift+F
 
-### Other system actions
-- "click" → simulates pressing Enter/Return
-- "open Safari", "open Chrome" → launches the app (macOS)
-- "enter" → presses Enter in whatever is focused
-
 ### Pause / Resume
 Say "pause" or "stop listening" to pause. Say "resume" or use `Ctrl+Shift+1` to start again.
+
+---
+
+## System Commands (Any App)
+
+These commands work regardless of which app is in the foreground. They are processed before any VS Code or LLM logic.
+
+### Mouse
+| Say | Action |
+|-----|--------|
+| "click" | Left click at current mouse position |
+| "double click" | Double click at current mouse position |
+| "right click" | Right click at current mouse position |
+| "move mouse up/down/left/right [N]" | Move mouse N pixels (default 50) |
+
+### Open & switch apps
+| Say | Action |
+|-----|--------|
+| "open Safari", "open Chrome", "open Slack" | Open or focus the named app |
+| "open VS Code", "open IDE", "open code", "open Visual Studio Code" | Open VS Code (aliases handled) |
+| "switch to Safari", "switch to Terminal" | Bring the named app to front |
+
+Polite phrasing works too — "could you please open Safari" is handled correctly.
+
+### Browser navigation
+| Say | Action |
+|-----|--------|
+| "back" / "go back" | Cmd+[ (browser back) |
+| "forward" / "go forward" | Cmd+] (browser forward) |
+| "refresh" / "reload" | Cmd+R |
+| "hard refresh" | Cmd+Shift+R |
+| "new tab" | Cmd+T |
+| "close tab" | Cmd+W |
+| "reopen tab" / "reopen closed tab" | Cmd+Shift+T |
+| "address bar" / "url bar" | Cmd+L |
+| "bookmark" / "bookmark page" | Cmd+D |
+
+### Key presses
+| Say | Action |
+|-----|--------|
+| "press enter", "press escape", "press tab" | Sends that key |
+| "press up", "press down", "press left", "press right" | Arrow keys |
+| "press page up", "press page down", "press home", "press end" | Navigation keys |
+
+### Type text
+| Say | Action |
+|-----|--------|
+| "type hello world" | Types the text via clipboard paste |
+
+### Window management
+| Say | Action |
+|-----|--------|
+| "minimize" | Cmd+M |
+| "close window" | Cmd+W |
+| "full screen" | Cmd+Ctrl+F |
+| "next window" / "previous window" | Cmd+` / Cmd+Shift+` |
+| "hide" / "hide app" | Cmd+H |
+| "show desktop" | F11 |
+| "mission control" | Ctrl+Up |
+
+### System
+| Say | Action |
+|-----|--------|
+| "spotlight" / "search computer" | Cmd+Space |
+| "screenshot" | Cmd+Shift+3 (full screen) |
+| "screenshot selection" | Cmd+Shift+4 (area) |
+| "lock screen" | Cmd+Ctrl+Q |
+
+---
+
+## Unfocused Commands (When Another App Is Active)
+
+When VS Code is **not** the frontmost window, these additional commands route keystrokes to whatever app you're using (Safari, Terminal.app, Finder, etc.). They do **not** trigger VS Code actions.
+
+### Arrow keys & repetition
+| Say | Action |
+|-----|--------|
+| "up", "down", "left", "right" | Arrow key |
+| "up 5 times", "down three times" | Repeat arrow key N times |
+
+### Scrolling
+| Say | Action |
+|-----|--------|
+| "scroll up" / "scroll down" | Smooth scroll (15 arrow presses) |
+| "scroll up a lot" / "scroll down a lot" | Big scroll (2 page jumps) |
+| "page up" / "page down" | Single page jump |
+| "scroll to top" / "scroll to bottom" | Cmd+Home / Cmd+End |
+
+### Basic keys
+| Say | Action |
+|-----|--------|
+| "enter" / "return" / "submit" | Enter key |
+| "escape" / "cancel" / "dismiss" | Escape key |
+| "tab" | Tab key |
+| "space" | Space key |
+| "delete" / "backspace" | Backspace key |
+
+### Tab switching
+| Say | Action |
+|-----|--------|
+| "next tab" / "previous tab" | Ctrl+Tab / Ctrl+Shift+Tab |
+| "first tab", "second tab", ..., "ninth tab" | Cmd+1 through Cmd+9 |
+| "tab 1", "tab 2", ..., "tab 9" | Cmd+1 through Cmd+9 |
+| "last tab" | Cmd+9 |
+
+### Text editing
+| Say | Action |
+|-----|--------|
+| "undo" / "redo" | Cmd+Z / Cmd+Shift+Z |
+| "copy" / "paste" / "cut" | Cmd+C / Cmd+V / Cmd+X |
+| "select all" | Cmd+A |
+| "find" / "search" | Cmd+F |
+| "save" | Cmd+S |
+| "close" / "quit" | Cmd+W / Cmd+Q |
+| "zoom in" / "zoom out" / "reset zoom" | Cmd+= / Cmd+- / Cmd+0 |
+
+### Selection
+| Say | Action |
+|-----|--------|
+| "select to end" / "select to start" | Cmd+Shift+Right / Cmd+Shift+Left |
+| "select word" | Option+Shift+Right |
+| "select line" | Home then Shift+End |
+
+### Developer tools (browser)
+| Say | Action |
+|-----|--------|
+| "dev tools" / "inspect" / "inspect element" | Cmd+Option+I |
+| "console" / "open console" | Cmd+Option+J |
+| "view source" | Cmd+Option+U |
+
+### Terminal.app / iTerm shortcuts
+| Say | Action |
+|-----|--------|
+| "clear" / "clear terminal" | Cmd+K |
+| "interrupt" / "control c" / "kill process" | Ctrl+C |
+| "exit terminal" / "control d" | Ctrl+D |
+| "suspend" / "control z" | Ctrl+Z |
+| "reverse search" / "search history" / "control r" | Ctrl+R |
+| "beginning of line" / "control a" | Ctrl+A |
+| "end of line" / "control e" | Ctrl+E |
+| "clear line" / "control u" | Ctrl+U |
+| "delete word" / "control w" | Ctrl+W |
+
+### Finder shortcuts
+| Say | Action |
+|-----|--------|
+| "show hidden files" | Cmd+Shift+. |
+| "go to folder" | Cmd+Shift+G |
+| "new folder" | Cmd+Shift+N |
+| "get info" / "file info" | Cmd+I |
 
 ---
 
@@ -104,9 +251,9 @@ Mantra supports two AI agent backends: **Claude Code** (via the VS Code extensio
 ### Sending prompts to the agent
 Say "ask Claude to refactor this function", "tell Codex to add unit tests", "ask agent how to fix that", or "ask LLM to explain this error". All of these — regardless of which name you use — route to whichever agent is currently selected. Mantra's LLM uses conversation memory and terminal history to craft a context-aware prompt, so you can say vague things like "ask Claude how to fix that" and it will resolve "that" to whatever you were just working on.
 
-Common phrases like "ask Claude ...", "tell Codex ...", "ask agent ...", "ask LLM ...", "ask AI ..." are intercepted before the LLM for instant routing.
+Common phrases like "ask Claude ...", "tell Codex ...", "ask agent ...", "ask LLM ...", "ask AI ..." are intercepted before the LLM for instant routing. These also work when VS Code is not focused.
 
-### When the agent is running
+### When the agent is running (VS Code focused)
 While the agent terminal is active:
 - **Commands still work normally** — "save file", "undo", "focus terminal" all execute as usual
 - **Questions and conversation go to the agent** — "how do I fix this error?" types into the agent
@@ -155,7 +302,7 @@ Mantra adds a panel to the VS Code activity bar. From the sidebar you can:
 Toggle via the sidebar or Command Palette. When enabled (shown as **ON** in the sidebar):
 
 - **No LLM calls** — speech is still transcribed via Deepgram, but the transcript is only matched against pre-mapped commands and text operations.
-- **What works:** all 75+ IDE commands ("save", "undo", "format document"), text operations ("go to line 20", "select lines 4 to 19", "scroll down", "delete line"), keyboard shortcuts ("command B"), focus/navigation commands, and pause/resume.
+- **What works:** all 75+ IDE commands ("save", "undo", "format document"), text operations ("go to line 20", "select lines 4 to 19", "scroll down", "delete line"), keyboard shortcuts ("command B"), system commands, focus/navigation commands, and pause/resume.
 - **What doesn't work:** code edits, questions, terminal command generation, and agent forwarding — anything that requires the LLM to interpret intent.
 
 This is useful for low-latency command execution without any API calls beyond speech-to-text, or when you don't have an LLM API key configured.
@@ -221,6 +368,7 @@ Open **Settings > Extensions > Mantra** to adjust:
 ## Troubleshooting
 
 - **No mic on macOS** — Allow VS Code under *System Settings > Privacy & Security > Microphone*.
+- **Mouse click not working** — Allow VS Code under *System Settings > Privacy & Security > Accessibility*.
 - **"Command not found: claude"** — Add the CLI to your PATH: `echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.zshrc && source ~/.zshrc`
 - **Codex CLI not found** — Install via `npm install -g @openai/codex`, or use the install button in the sidebar.
 - **Ghost transcriptions ("two", "four")** — These are filtered automatically. If ambient noise is high, consider adjusting your microphone position.
@@ -229,13 +377,13 @@ Open **Settings > Extensions > Mantra** to adjust:
 
 ---
 
-## Supported IDE Commands
+## Supported IDE Commands (VS Code Focused)
 
 Over 75 pre-mapped VS Code commands. You can say these exactly or use natural variations (the LLM understands intent):
 
-> save, save all, new file, close file, close other files, close all files, reopen closed editor, undo, redo, cut, copy, paste, select all, toggle line comment, toggle block comment, format document, format selection, rename symbol, quick fix, organize imports, expand selection, shrink selection, select next occurrence, duplicate line down, duplicate line up, move line up, move line down, add cursor above, add cursor below, fold all, unfold all, toggle word wrap, find, replace, find in files, replace in files, back, forward, next tab, previous tab, tab one through tab nine, page up, page down, go to definition, peek definition, go to references, go to implementation, jump to bracket, focus editor, focus first editor, focus second editor, focus sidebar, focus panel, toggle output, toggle sidebar, toggle panel, toggle zen mode, split editor, toggle minimap, zoom in, zoom out, reset zoom, toggle terminal, focus terminal, new terminal, next terminal, previous terminal, focus agent, new conversation, accept changes, reject changes, focus explorer, focus search, focus source control, focus debug, focus extensions, show command palette, quick open, toggle breakpoint, start debugging, stop debugging, continue debugging, step over, step into, step out.
+> save, save all, new file, close file, close other files, close all files, reopen closed editor, undo, redo, cut, copy, paste, select all, toggle line comment, toggle block comment, format document, format selection, rename symbol, quick fix, organize imports, expand selection, shrink selection, select next occurrence, duplicate line down, duplicate line up, move line up, move line down, add cursor above, add cursor below, fold all, unfold all, toggle word wrap, find, replace, find in files, replace in files, next tab, previous tab, tab one through tab nine, page up, page down, go to definition, peek definition, go to references, go to implementation, jump to bracket, focus editor, focus first editor, focus second editor, focus sidebar, focus panel, toggle output, toggle sidebar, toggle panel, toggle zen mode, split editor, toggle minimap, zoom in, zoom out, reset zoom, toggle terminal, focus terminal, new terminal, next terminal, previous terminal, focus agent, new conversation, accept changes, reject changes, focus explorer, focus search, focus source control, focus debug, focus extensions, show command palette, quick open, toggle breakpoint, start debugging, stop debugging, continue debugging, step over, step into, step out, stage file, stage all, unstage file, commit, push, pull, checkout branch, show diff, stash, pop stash, toggle fullscreen, show problems, show notifications, clear notifications, reveal in finder, copy file path, copy relative path, markdown preview, run task, run build task, run test task, clear terminal, terminal scroll up, terminal scroll down.
 
-Additional text operations handled directly (no LLM needed): go to line N, select/copy/cut/delete line N, select/copy/cut/delete lines A to B, scroll up/down [N lines/pages], page up/down, new line above/below, indent, outdent, delete, paste.
+Additional text operations handled directly (no LLM needed): go to line N, select/copy/cut/delete line N, select/copy/cut/delete lines A to B, scroll up/down [N lines/pages], page up/down, new line above/below, indent, outdent, delete, paste, kill process, tab complete, run last command.
 
 ---
 
@@ -284,3 +432,4 @@ echo 'export MANTRA_FFMPEG_PATH=/usr/bin/ffmpeg' >> ~/.bashrc
 - FFmpeg is used automatically if available; there is nothing extra to install.
 - The extension loads after VS Code startup; listening begins only when you invoke **Mantra: Start Recording**.
 - All voice control executes standard VS Code commands or safe editor edits; you can always undo changes on your own or just say "undo".
+- System commands (mouse, app switching, browser navigation, etc.) are macOS only.

@@ -3,6 +3,7 @@ import { startMicStream, pauseRecording, recorderActive, onVolume, offVolume, ge
 import { Model } from './model';
 import { canonicalCommandPhrases, tryExecuteMappedCommand } from './commands';
 import { handleCommand as handleTextCommand } from './textOps';
+import { trySystemCommand } from './systemCommands';
 import { typeInTerminal, executeInTerminal, executeLastTyped } from './terminal';
 import {
   sendToClaudePanel, confirmClaude, typeInClaude,
@@ -1132,8 +1133,10 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
           }
 
           // --- terminal execute / enter shortcut (pre-LLM) ---
+          // Only when VS Code is focused — when unfocused, "enter" goes to trySystemCommand
+          // which sends the keystroke to the frontmost app.
           // Use both t (raw) and tc (punctuation-stripped) — Flux often adds "."
-          if (/^(execute|execute that|run that|hit enter|press enter|submit|enter)\.?$/i.test(t)) {
+          if (vscode.window.state.focused && /^(execute|execute that|run that|hit enter|press enter|submit|enter)\.?$/i.test(t)) {
             if (isAgentModeActive()) {
               confirmSelectedAgent();
               pushLog('command', `Confirmed ${getSelectedAgent()} (Enter)`);
@@ -1217,36 +1220,17 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
           // Strip trailing punctuation for cleaner matching (Flux often adds "." or "?")
           const tc = t.replace(/[.,!?;:]+$/, '').trim();
 
-          // Generic keyboard shortcuts via osascript (macOS)
-          // "command B", "control shift P", "command shift F", etc.
-          if (process.platform === 'darwin') {
-            const kbMatch = tc.match(/^((?:(?:command|cmd|control|ctrl|alt|option|shift)[\s+]*)+)([a-z0-9/\\[\]'`,.\-=])$/i);
-            if (kbMatch) {
-              const modsRaw = kbMatch[1].toLowerCase();
-              const key = kbMatch[2];
-              const usings: string[] = [];
-              if (/command|cmd/.test(modsRaw)) usings.push('command down');
-              if (/control|ctrl/.test(modsRaw)) usings.push('control down');
-              if (/alt|option/.test(modsRaw)) usings.push('option down');
-              if (/shift/.test(modsRaw)) usings.push('shift down');
-              const usingClause = usings.length > 0 ? ` using {${usings.join(', ')}}` : '';
-              const script = `tell application "System Events" to keystroke "${key}"${usingClause}`;
-              exec(`osascript -e '${script}'`, (err) => {
-                if (err) console.warn('[Mantra] osascript keystroke failed:', err.message);
-              });
-              vscode.window.setStatusBarMessage(`⌨️ ${modsRaw.trim()} ${key}`, 1500);
-              pushLog('command', `Keystroke: ${modsRaw.trim()} ${key}`);
-              return;
-            }
+          // --- system-level commands (keyboard shortcuts, browser, window mgmt, keys, mouse, apps) ---
+          // When VS Code is NOT focused, more commands route to System Events
+          // (arrows, scroll, undo/copy/paste, etc. go to the frontmost app)
+          const vscFocused = vscode.window.state.focused;
+          if (await trySystemCommand(tc, vscFocused)) {
+            pushLog('command', tc);
+            return;
           }
-
-          // "click" → simulate mouse click via osascript
-          if (/^click$/i.test(tc)) {
-            if (process.platform === 'darwin') {
-              exec(`osascript -e 'tell application "System Events" to key code 36'`, (err) => {
-                if (err) console.warn('[Mantra] click failed:', err.message);
-              });
-            } else if (isAgentModeActive()) {
+          // "click" fallback for non-macOS (trySystemCommand handles macOS)
+          if (process.platform !== 'darwin' && /^click$/i.test(tc)) {
+            if (isAgentModeActive()) {
               confirmSelectedAgent();
             } else {
               executeLastTyped();
@@ -1254,18 +1238,59 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
             return;
           }
 
-          // Open apps (macOS) — strip punctuation from app name
-          if (process.platform === 'darwin') {
-            const appMatch = tc.match(/^open\s+(.+)$/i);
-            if (appMatch) {
-              const appName = appMatch[1].replace(/[.,!?;:]+$/, '').trim();
-              exec(`open -a "${appName}"`, (err) => {
-                if (err) vscode.window.showWarningMessage(`Could not open "${appName}": ${err.message}`);
-              });
-              vscode.window.setStatusBarMessage(`Opening ${appName}...`, 2000);
-              pushLog('command', `Open app: ${appName}`);
+          // ── When VS Code is NOT focused, only allow agent interaction + focus switching ──
+          // Don't run VS Code commands or LLM code modifications on other apps.
+          if (!vscFocused) {
+            // "ask/tell agent <prompt>"
+            {
+              const agentAskMatch = tc.match(/^(?:ask|tell|hey)\s+(?:codex|claude|agent|llm|ai|the\s+agent|the\s+llm)\b[,\s]*(.+)/i);
+              if (agentAskMatch && agentAskMatch[1].trim()) {
+                const prompt = agentAskMatch[1].replace(/^(uh|um|like|so|to|,)+\s*/i, '').trim();
+                if (prompt) {
+                  const agent = getSelectedAgent();
+                  if (agent === 'none') {
+                    vscode.window.showWarningMessage('No agent selected.');
+                    pushLog('error', 'No agent selected');
+                  } else if (isAgentModeActive()) {
+                    typeInSelectedAgent(prompt);
+                    pushLog(agent as LogEntry['kind'], prompt);
+                  } else {
+                    await sendToSelectedAgent(buildClaudePrompt(prompt));
+                    pushLog(agent as LogEntry['kind'], prompt);
+                  }
+                  return;
+                }
+              }
+            }
+            // Focus commands: bring VS Code to front, then focus editor/terminal/agent
+            if (/^(focus editor|go to editor|go to code|switch to editor|back to editor|back to code|focus terminal|go to terminal|switch to terminal|back to terminal|focus claude|switch to claude|go to claude|open claude|talk to claude|claude mode|focus codex|switch to codex|go to codex|open codex|talk to codex|codex mode|focus agent|switch to agent|go to agent|open agent|talk to agent|agent mode|focus llm|open llm|talk to llm|exit claude|leave claude|exit codex|leave codex|exit agent|leave agent|go back to editor)$/i.test(tc)) {
+              // Bring VS Code to foreground first
+              exec('open -a "Visual Studio Code"', () => {});
+              await new Promise(r => setTimeout(r, 300));
+              if (/editor|code|exit|leave|go back/i.test(tc)) {
+                if (isClaudeMode()) setClaudeMode(false);
+                if (isCodexMode()) setCodexMode(false);
+                await vscode.commands.executeCommand('workbench.action.focusFirstEditorGroup');
+                pushLog('command', 'Focus editor');
+              } else if (/terminal/i.test(tc)) {
+                if (isClaudeMode()) setClaudeMode(false);
+                if (isCodexMode()) setCodexMode(false);
+                await vscode.commands.executeCommand('workbench.action.terminal.focus');
+                pushLog('command', 'Focus terminal');
+              } else {
+                if (getSelectedAgent() === 'none') {
+                  vscode.window.showWarningMessage('No agent selected.');
+                  pushLog('error', 'No agent selected');
+                } else {
+                  await focusSelectedAgent();
+                  pushLog('command', `Focus ${getSelectedAgent()}`);
+                }
+              }
               return;
             }
+            // Everything else: don't run VS Code commands or LLM routing when not focused
+            console.log(`[Mantra] VS Code not focused, ignoring: "${tc}"`);
+            return;
           }
 
           // --- Agent mode: "enter"/"yes" to confirm, arrow keys ---
@@ -1287,7 +1312,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
           }
 
           // --- focus management (always available, use tc for punctuation tolerance) ---
-          if (/^(focus editor|go to editor|go to code|switch to editor|back to editor|back to code|exit claude|leave claude|exit codex|leave codex|exit agent|leave agent|stop claude mode|stop codex mode|stop agent mode|go back|go back to editor)$/i.test(tc)) {
+          if (/^(focus editor|go to editor|go to code|switch to editor|back to editor|back to code|exit claude|leave claude|exit codex|leave codex|exit agent|leave agent|stop claude mode|stop codex mode|stop agent mode|go back to editor)$/i.test(tc)) {
             if (isClaudeMode()) setClaudeMode(false);
             if (isCodexMode()) setCodexMode(false);
             await vscode.commands.executeCommand('workbench.action.focusFirstEditorGroup');
