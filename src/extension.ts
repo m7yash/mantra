@@ -12,16 +12,10 @@ import {
   isClaudeMode, setClaudeMode, isClaudeTerminalActive,
   claudeResume, claudeNewConversation, claudeSetModel,
   claudeHelp, claudeStatus, claudeCompact, claudeUndo, claudeInterrupt,
-  closeClaudeTerminal,
 } from './claude';
 import {
-  sendToCodexPanel, confirmCodex, typeInCodex,
-  codexArrowUp, codexArrowDown,
-  focusCodexPanel,
-  isCodexMode, setCodexMode, isCodexTerminalActive,
-  codexInterrupt,
-  closeCodexTerminal, checkCliInstalled,
-} from './codex';
+  isClaudeTerminal,
+} from './claude';
 import { MantraSidebarProvider, LogEntry } from './sidebarProvider';
 import { exec } from 'child_process';
 import { initTerminalHistory, getLastTerminalOutput, getFullTerminalHistory, formatTerminalContext, onTerminalCommand } from './terminalHistory';
@@ -33,6 +27,7 @@ let cerebrasApiKey: string = '';
 let groqApiKey: string = '';
 let deepgramApiKey: string = '';
 let aquavoiceApiKey: string = '';
+let assemblyaiApiKey: string = '';
 let outputChannel: vscode.OutputChannel | null = null;
 let sidebar: MantraSidebarProvider | null = null;
 
@@ -130,7 +125,7 @@ function showQuickAnswer(payload: string | undefined, transcript: string, implic
     const a = (answer || '').trim();
     outputChannel.appendLine(`[${time}] Q: ${q}`);
     if (implicitFallback) {
-      outputChannel.appendLine('(No agent selected — select Claude Code or Codex in Settings for better handling of complex requests.)\n');
+      outputChannel.appendLine('(No agent selected — select Claude Code in Settings for better handling of complex requests.)\n');
     }
     outputChannel.appendLine(a);
     outputChannel.appendLine(sep);
@@ -142,96 +137,46 @@ function showQuickAnswer(payload: string | undefined, transcript: string, implic
 }
 
 /** In-memory agent selection — updated synchronously on dropdown change, avoids async config race. */
-let __selectedAgent: 'claude' | 'codex' | 'none' = vscode.workspace.getConfiguration('mantra').get<string>('agentBackend', 'none') as 'claude' | 'codex' | 'none';
+let __selectedAgent: 'claude' | 'none' = vscode.workspace.getConfiguration('mantra').get<string>('agentBackend', 'none') as 'claude' | 'none';
 
 /** Get the currently selected agent backend. */
-function getSelectedAgent(): 'claude' | 'codex' | 'none' {
+function getSelectedAgent(): 'claude' | 'none' {
   return __selectedAgent;
 }
 
-/** Check if the selected agent's mode or terminal is active (voice should go to agent). */
 function isAgentModeActive(): boolean {
-  const agent = getSelectedAgent();
-  if (agent === 'none') return false;
-  if (agent === 'claude') return isClaudeMode() || isClaudeTerminalActive();
-  return isCodexMode() || isCodexTerminalActive();
+  if (getSelectedAgent() === 'none') return false;
+  return isClaudeMode() || isClaudeTerminalActive();
 }
 
-/** Focus the selected agent's panel. */
 async function focusSelectedAgent(): Promise<void> {
-  const agent = getSelectedAgent();
-  if (agent === 'claude') {
-    // Close codex terminal to enforce mutual exclusivity
-    closeCodexTerminal();
-    await focusClaudePanel();
-  } else {
-    closeClaudeTerminal();
-    await focusCodexPanel();
-  }
+  await focusClaudePanel();
 }
 
-/** Send a prompt to the selected agent. */
-async function sendToSelectedAgent(prompt: string): Promise<void> {
-  const agent = getSelectedAgent();
-  if (agent === 'claude') {
-    await sendToClaudePanel(prompt);
-  } else {
-    await sendToCodexPanel(prompt);
-  }
+async function sendToSelectedAgent(prompt: string): Promise<boolean> {
+  return await sendToClaudePanel(prompt);
 }
 
-/** Type text into the selected agent's terminal (no Enter).
- *  Includes the context file reference so follow-up messages
- *  also have access to updated session memory & terminal history. */
 function typeInSelectedAgent(text: string): void {
-  const enriched = buildAgentPrompt(text);
-  const agent = getSelectedAgent();
-  if (agent === 'claude') {
-    typeInClaude(enriched);
-  } else {
-    typeInCodex(enriched);
-  }
+  typeInClaude(buildAgentPrompt(text));
 }
 
-/** Confirm (Enter) in the selected agent's terminal. */
 function confirmSelectedAgent(): void {
-  const agent = getSelectedAgent();
-  if (agent === 'claude') {
-    confirmClaude();
-  } else {
-    confirmCodex();
+  confirmClaude();
+}
+
+function agentArrowUp(): void { claudeArrowUp(); }
+function agentArrowDown(): void { claudeArrowDown(); }
+function interruptSelectedAgent(): void { claudeInterrupt(); }
+
+/** Focus the terminal panel, switching away from agent terminals if needed. */
+async function focusNonAgentTerminal(): Promise<void> {
+  await vscode.commands.executeCommand('workbench.action.terminal.focus');
+  const active = vscode.window.activeTerminal;
+  if (active && isClaudeTerminal(active)) {
+    const nonAgent = vscode.window.terminals.find(t => !isClaudeTerminal(t));
+    if (nonAgent) nonAgent.show();
   }
-}
-
-/** Arrow up in the selected agent's terminal. */
-function agentArrowUp(): void {
-  const agent = getSelectedAgent();
-  if (agent === 'claude') claudeArrowUp();
-  else codexArrowUp();
-}
-
-/** Arrow down in the selected agent's terminal. */
-function agentArrowDown(): void {
-  const agent = getSelectedAgent();
-  if (agent === 'claude') claudeArrowDown();
-  else codexArrowDown();
-}
-
-/** Interrupt the selected agent. */
-function interruptSelectedAgent(): void {
-  const agent = getSelectedAgent();
-  if (agent === 'claude') claudeInterrupt();
-  else codexInterrupt();
-}
-
-/** Check if the selected agent CLI is installed. */
-function isSelectedAgentInstalled(): boolean {
-  const agent = getSelectedAgent();
-  if (agent === 'claude') {
-    // Claude can use the VS Code extension command; check for CLI too
-    return true; // Claude is opened via VS Code extension, always "available"
-  }
-  return checkCliInstalled('codex');
 }
 
 /** Produce a compact unified-style diff between two texts (line-based). */
@@ -560,19 +505,24 @@ function syncFromSettings() {
   const groq = (cfg.get<string>('groqApiKey') || '').trim();
   const deep = (cfg.get<string>('deepgramApiKey') || '').trim();
   const aqua = (cfg.get<string>('aquavoiceApiKey') || '').trim();
+  const aai = (cfg.get<string>('assemblyaiApiKey') || '').trim();
   const effort = (cfg.get<string>('reasoningEffort') || 'low').trim();
   const provider = (cfg.get<string>('llmProvider') || 'groq').trim();
+  const llmModel = (cfg.get<string>('llmModel') || '').trim();
 
   if (cerebras) process.env.CEREBRAS_API_KEY = cerebras;
   if (groq) process.env.GROQ_API_KEY = groq;
   if (deep) process.env.DEEPGRAM_API_KEY = deep;
   if (aqua) process.env.AQUAVOICE_API_KEY = aqua;
+  if (aai) process.env.ASSEMBLYAI_API_KEY = aai;
   process.env.MANTRA_REASONING_EFFORT = effort;
 
   if (model) {
     model.setProvider(provider as any);
+    model.setModel(llmModel);
     if (groq) model.setGroqApiKey(groq);
     if (aqua) model.setAquavoiceApiKey(aqua);
+    if (aai) model.setAssemblyaiApiKey(aai);
   }
 }
 
@@ -1128,6 +1078,24 @@ async function ensureApiKeys(context: vscode.ExtensionContext): Promise<boolean>
         await context.secrets.store('AQUAVOICE_API_KEY', aquavoiceApiKey);
       }
     }
+  } else if (sttProvider === 'assemblyai' || sttProvider === 'assemblyai-batch') {
+    // AssemblyAI (streaming or batch)
+    if (!assemblyaiApiKey) {
+      try { assemblyaiApiKey = (await context.secrets.get('ASSEMBLYAI_API_KEY')) || ''; } catch { }
+      if (!assemblyaiApiKey && process.env.ASSEMBLYAI_API_KEY) { assemblyaiApiKey = process.env.ASSEMBLYAI_API_KEY; }
+      if (!assemblyaiApiKey) {
+        assemblyaiApiKey = await vscode.window.showInputBox({
+          prompt: 'Enter your AssemblyAI API key',
+          ignoreFocusOut: true,
+          password: true,
+        }) || '';
+        if (!assemblyaiApiKey) {
+          vscode.window.showWarningMessage('ASSEMBLYAI_API_KEY is required for AssemblyAI transcription.');
+          return false;
+        }
+        await context.secrets.store('ASSEMBLYAI_API_KEY', assemblyaiApiKey);
+      }
+    }
   } else {
     // Deepgram (streaming speech-to-text)
     if (!deepgramApiKey) {
@@ -1154,6 +1122,9 @@ async function ensureApiKeys(context: vscode.ExtensionContext): Promise<boolean>
   }
   if (sttProvider === 'aquavoice' && aquavoiceApiKey) {
     model.setAquavoiceApiKey(aquavoiceApiKey);
+  }
+  if ((sttProvider === 'assemblyai' || sttProvider === 'assemblyai-batch') && assemblyaiApiKey) {
+    model.setAssemblyaiApiKey(assemblyaiApiKey);
   }
 
   // LLM provider setup — only when LLM is enabled
@@ -1228,10 +1199,12 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         e.affectsConfiguration('mantra.llmProvider') ||
         e.affectsConfiguration('mantra.deepgramApiKey') ||
         e.affectsConfiguration('mantra.aquavoiceApiKey') ||
+        e.affectsConfiguration('mantra.assemblyaiApiKey') ||
         e.affectsConfiguration('mantra.sttProvider') ||
         e.affectsConfiguration('mantra.silenceTimeout') ||
         e.affectsConfiguration('mantra.sensitivity') ||
         e.affectsConfiguration('mantra.reasoningEffort') ||
+        e.affectsConfiguration('mantra.llmModel') ||
         e.affectsConfiguration('mantra.agentBackend') ||
         e.affectsConfiguration('mantra.commandsOnly') ||
         e.affectsConfiguration('mantra.sendContext')
@@ -1256,6 +1229,10 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
           if (e.affectsConfiguration('mantra.aquavoiceApiKey')) {
             const newKey = (cfg.get<string>('aquavoiceApiKey') || '').trim();
             if (newKey) { aquavoiceApiKey = newKey; model.setAquavoiceApiKey(newKey); }
+          }
+          if (e.affectsConfiguration('mantra.assemblyaiApiKey')) {
+            const newKey = (cfg.get<string>('assemblyaiApiKey') || '').trim();
+            if (newKey) { assemblyaiApiKey = newKey; model.setAssemblyaiApiKey(newKey); }
           }
         }
       }
@@ -1292,8 +1269,9 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     if (!(await ensureApiKeys(context))) return;
 
     const sttProvider = (vscode.workspace.getConfiguration('mantra').get<string>('sttProvider') || 'deepgram').trim();
-    const isAquaVoice = sttProvider === 'aquavoice';
-    console.log(`[Mantra] STT provider: ${isAquaVoice ? 'Aqua Voice (batch)' : 'Deepgram Flux (streaming)'}`);
+    const isBatchMode = sttProvider === 'aquavoice' || sttProvider === 'assemblyai-batch';
+    const sttLabel = sttProvider === 'aquavoice' ? 'Aqua Voice (batch)' : sttProvider === 'assemblyai' ? 'AssemblyAI (streaming)' : sttProvider === 'assemblyai-batch' ? 'AssemblyAI (batch)' : 'Deepgram Flux (streaming)';
+    console.log(`[Mantra] STT provider: ${sttLabel}`);
 
     // Single progress notification for the whole session — updates in-place
     // with live transcription, no spam
@@ -1323,38 +1301,35 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       sidebar?.postState({ listening: true, provider: provLabel, sttProvider });
     }
 
-    // Volume metering → sidebar
-    onVolume((level) => sidebar?.postState({ volume: level }));
+    // Volume metering → sidebar (throttled to ~4fps to avoid message spam)
+    let lastVolumePush = 0;
+    onVolume((level) => {
+      const now = Date.now();
+      if (now - lastVolumePush < 250) return;
+      lastVolumePush = now;
+      sidebar?.postState({ volume: level });
+    });
 
     // Loop: mic → STT → final transcript → route → repeat
+    let loopIteration = 0;
+    let aaiSessionRetries = 0; // consecutive 1008 retries
     while (!__mantraPaused) {
+      const loopStart = Date.now();
+      loopIteration++;
+      console.log(`[Mantra] === Loop iteration ${loopIteration} start ===`);
       try {
         await startMicStream(context, async (pcm) => {
-          // Push mic name to sidebar (resolved inside startMicStream before this callback)
-          sidebar?.postState({ mic: getMicName() });
+          console.log(`[Mantra] onStream callback entered (iteration ${loopIteration}, pcm destroyed=${(pcm as any).destroyed})`);
 
-          let transcript: string;
+          // Shared transcript processing — extracted so it can be called once per
+          // turn in persistent mode (AssemblyAI) or once per mic stream (others).
+          const handleTranscript = async (transcript: string) => {
 
-          if (isAquaVoice) {
-            // Aqua Voice: buffer audio, detect silence, then send batch
-            const mantraCfg = vscode.workspace.getConfiguration('mantra');
-            const silenceTimeoutSec = parseFloat(
-              mantraCfg.get<string>('silenceTimeout') || '2'
-            ) || 1.5;
-            const sensitivity = mantraCfg.get<string>('sensitivity') || 'medium';
-            reportProgress?.('Recording... (speak, then pause to send)');
-            transcript = await model!.transcribeBatch(pcm, (status) => {
-              reportProgress?.(status);
-            }, silenceTimeoutSec, () => __mantraPaused && !__stopAndTranscribe, sensitivity);
-          } else {
-            // Deepgram: stream audio with live transcription
-            transcript = await model!.transcribeStream(pcm, (partial) => {
-              if (partial) reportProgress?.(partial);
-            });
+          // Show the final transcript (non-blocking — no delay before processing)
+          if (transcript) {
+            reportProgress?.(transcript);
+            vscode.window.setStatusBarMessage(`"${transcript}"`, 1500);
           }
-
-          // Reset notification after transcription completes
-          reportProgress?.('Listening...');
 
           // If the user clicked Stop (not Stop & Transcribe), discard whatever came back
           if (__mantraPaused && !__stopAndTranscribe) {
@@ -1365,7 +1340,6 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
           if (!transcript) return;
 
           // Fix common Deepgram misrecognitions
-          transcript = transcript.replace(/\bcodecs\b/gi, 'codex');
           transcript = transcript.replace(/\bdysfunction\b/gi, 'this function');
           transcript = transcript.replace(/\bdis function\b/gi, 'this function');
 
@@ -1401,8 +1375,8 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
           sidebar?.postState({ lastTranscript: transcript });
           pushLog('transcript', transcript);
 
-          // Aqua Voice: show completed transcript in bottom-right status bar
-          if (isAquaVoice) {
+          // Batch mode: show completed transcript in bottom-right status bar
+          if (isBatchMode) {
             vscode.window.setStatusBarMessage(`\u201c${transcript}\u201d`, 5000);
           }
 
@@ -1424,7 +1398,11 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
           // which sends the keystroke to the frontmost app.
           // Use both t (raw) and tc (punctuation-stripped) — Flux often adds "."
           if (vscode.window.state.focused && /^(execute|execute that|run that|hit enter|press enter|submit|enter)\.?$/i.test(t)) {
-            if (isAgentModeActive()) {
+            // When an agent is selected, always confirm in the agent terminal —
+            // even if Claude mode was auto-exited (e.g. user clicked back to editor),
+            // "enter" after sending a prompt should confirm in the agent, not run
+            // whatever happens to be in a regular terminal.
+            if (getSelectedAgent() !== 'none') {
               confirmSelectedAgent();
               pushLog('command', `Confirmed ${getSelectedAgent()} (Enter)`);
             } else {
@@ -1435,15 +1413,8 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
           }
 
           // --- Auto-detect agent mode from active terminal ---
-          // Only auto-activate the SELECTED agent's mode
-          {
-            const agent = getSelectedAgent();
-            if (agent === 'claude' && !isClaudeMode() && isClaudeTerminalActive()) {
-              setClaudeMode(true);
-            }
-            if (agent === 'codex' && !isCodexMode() && isCodexTerminalActive()) {
-              setCodexMode(true);
-            }
+          if (getSelectedAgent() === 'claude' && !isClaudeMode() && isClaudeTerminalActive()) {
+            setClaudeMode(true);
           }
 
           // --- Claude diff actions (always available) ---
@@ -1489,7 +1460,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
             pushLog('claude', 'Claude undo');
             return;
           }
-          if (/^(stop|cancel|interrupt|stop claude|cancel claude|stop codex|cancel codex|stop agent|cancel agent|nevermind|never mind)$/i.test(t) && isAgentModeActive()) {
+          if (/^(stop|cancel|interrupt|stop claude|cancel claude|stop agent|cancel agent|nevermind|never mind)$/i.test(t) && isAgentModeActive()) {
             interruptSelectedAgent();
             pushLog(getSelectedAgent() as LogEntry['kind'], `Interrupted ${getSelectedAgent()}`);
             return;
@@ -1530,7 +1501,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
           if (!vscFocused) {
             // "ask/tell agent <prompt>"
             {
-              const agentAskMatch = tc.match(/^(?:ask|tell|hey)\s+(?:codex|claude|agent|llm|ai|the\s+agent|the\s+llm)\b[,\s]*(.+)/i);
+              const agentAskMatch = tc.match(/^(?:ask|tell|hey)\s+(?:claude|agent|llm|ai|the\s+agent|the\s+llm)\b[,\s]*(.+)/i);
               if (agentAskMatch && agentAskMatch[1].trim()) {
                 const prompt = agentAskMatch[1].replace(/^(uh|um|like|so|to|,)+\s*/i, '').trim();
                 if (prompt) {
@@ -1542,27 +1513,26 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
                     typeInSelectedAgent(buildAgentPrompt(prompt));
                     pushLog(agent as LogEntry['kind'], prompt);
                   } else {
-                    await sendToSelectedAgent(buildAgentPrompt(prompt));
-                    pushLog(agent as LogEntry['kind'], prompt);
+                    const sent = await sendToSelectedAgent(buildAgentPrompt(prompt));
+                    if (sent) { pushLog(agent as LogEntry['kind'], prompt); }
+                    else { pushLog('error', `Failed to send to ${agent}`); }
                   }
                   return;
                 }
               }
             }
             // Focus commands: bring VS Code to front, then focus editor/terminal/agent
-            if (/^(focus editor|go to editor|go to code|switch to editor|back to editor|back to code|focus terminal|go to terminal|switch to terminal|back to terminal|focus claude|switch to claude|go to claude|open claude|talk to claude|claude mode|focus codex|switch to codex|go to codex|open codex|talk to codex|codex mode|focus agent|switch to agent|go to agent|open agent|talk to agent|agent mode|focus llm|open llm|talk to llm|exit claude|leave claude|exit codex|leave codex|exit agent|leave agent|go back to editor)$/i.test(tc)) {
+            if (/^(focus editor|go to editor|go to code|switch to editor|back to editor|back to code|focus terminal|go to terminal|switch to terminal|back to terminal|focus claude|switch to claude|go to claude|open claude|talk to claude|claude mode|focus agent|switch to agent|go to agent|open agent|talk to agent|agent mode|focus llm|open llm|talk to llm|exit claude|leave claude|exit agent|leave agent|go back to editor)$/i.test(tc)) {
               // Bring VS Code to foreground first
               exec('open -a "Visual Studio Code"', () => {});
               await new Promise(r => setTimeout(r, 300));
               if (/editor|code|exit|leave|go back/i.test(tc)) {
                 if (isClaudeMode()) setClaudeMode(false);
-                if (isCodexMode()) setCodexMode(false);
                 await vscode.commands.executeCommand('workbench.action.focusFirstEditorGroup');
                 pushLog('command', 'Focus editor');
               } else if (/terminal/i.test(tc)) {
                 if (isClaudeMode()) setClaudeMode(false);
-                if (isCodexMode()) setCodexMode(false);
-                await vscode.commands.executeCommand('workbench.action.terminal.focus');
+                await focusNonAgentTerminal();
                 pushLog('command', 'Focus terminal');
               } else {
                 if (getSelectedAgent() === 'none') {
@@ -1599,9 +1569,8 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
           }
 
           // --- focus management (always available, use tc for punctuation tolerance) ---
-          if (/^(focus editor|go to editor|go to code|switch to editor|back to editor|back to code|exit claude|leave claude|exit codex|leave codex|exit agent|leave agent|stop claude mode|stop codex mode|stop agent mode|go back to editor)$/i.test(tc)) {
+          if (/^(focus editor|go to editor|go to code|switch to editor|back to editor|back to code|exit claude|leave claude|exit agent|leave agent|stop claude mode|stop agent mode|go back to editor)$/i.test(tc)) {
             if (isClaudeMode()) setClaudeMode(false);
-            if (isCodexMode()) setCodexMode(false);
             await vscode.commands.executeCommand('workbench.action.focusFirstEditorGroup');
             vscode.window.setStatusBarMessage('Focused editor', 1500);
             pushLog('command', 'Focus editor');
@@ -1609,8 +1578,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
           }
           if (/^(focus terminal|go to terminal|switch to terminal|back to terminal)$/i.test(tc)) {
             if (isClaudeMode()) setClaudeMode(false);
-            if (isCodexMode()) setCodexMode(false);
-            await vscode.commands.executeCommand('workbench.action.terminal.focus');
+            await focusNonAgentTerminal();
             pushLog('command', 'Focus terminal');
             return;
           }
@@ -1630,21 +1598,22 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
             return;
           }
 
-          // --- "ask codex/claude/agent/LLM <prompt>" pre-LLM shortcut ---
+          // --- "ask claude/agent/LLM <prompt>" pre-LLM shortcut ---
           // When no agent is selected, skip this shortcut and let the LLM handle it
           // (it will route to quick question as a fallback).
           {
-            const agentAskMatch = tc.match(/^(?:ask|tell|hey)\s+(?:codex|claude|agent|llm|ai|the\s+agent|the\s+llm)\b[,\s]*(.+)/i);
+            const agentAskMatch = tc.match(/^(?:ask|tell|hey)\s+(?:claude|agent|llm|ai|the\s+agent|the\s+llm)\b[,\s]*(.+)/i);
             if (agentAskMatch && agentAskMatch[1].trim() && getSelectedAgent() !== 'none') {
               const prompt = agentAskMatch[1].replace(/^(uh|um|like|so|to|,)+\s*/i, '').trim();
               if (prompt) {
-                const agent = getSelectedAgent() as 'claude' | 'codex';
+                const agent = getSelectedAgent() as 'claude';
                 if (isAgentModeActive()) {
                   typeInSelectedAgent(buildAgentPrompt(prompt));
                   pushLog(agent, prompt);
                 } else {
-                  await sendToSelectedAgent(buildAgentPrompt(prompt));
-                  pushLog(agent, prompt);
+                  const sent = await sendToSelectedAgent(buildAgentPrompt(prompt));
+                  if (sent) { pushLog(agent, prompt); }
+                  else { pushLog('error', `Failed to send to ${agent}`); }
                 }
                 return;
               }
@@ -1652,9 +1621,9 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
           }
 
           // --- enter agent mode explicitly (all names route to selected agent) ---
-          if (/^(focus claude|switch to claude|go to claude|open claude|claude mode|talk to claude|focus codex|switch to codex|go to codex|open codex|codex mode|talk to codex|focus agent|switch to agent|go to agent|open agent|agent mode|talk to agent|focus llm|open llm|talk to llm)$/i.test(t)) {
+          if (/^(focus claude|switch to claude|go to claude|open claude|claude mode|talk to claude|focus agent|switch to agent|go to agent|open agent|agent mode|talk to agent|focus llm|open llm|talk to llm)$/i.test(t)) {
             if (getSelectedAgent() === 'none') {
-              vscode.window.showWarningMessage('No agent selected — select Claude Code or Codex in the sidebar.');
+              vscode.window.showWarningMessage('No agent selected — select Claude Code in the sidebar.');
               pushLog('error', 'No agent selected');
             } else {
               await focusSelectedAgent();
@@ -1684,6 +1653,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
           // If user already has text selected, skip the selection model and
           // go straight to decide() which will activate SELECTION MODE.
           let scopeHighlight: vscode.TextEditorDecorationType | null = null;
+          let scopeRange: { start: number; end: number } | null = null;
           if (editor && editor.selection.isEmpty) {
             try {
               const scope = await model!.selectRange(transcript, {
@@ -1705,6 +1675,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 
               if (scope.action === 'range' && scope.startLine && scope.endLine) {
                 // Scoped modification — set selection and show gray highlight
+                scopeRange = { start: scope.startLine, end: scope.endLine };
                 const startPos = new vscode.Position(scope.startLine - 1, 0);
                 const endLine = Math.min(scope.endLine - 1, editor.document.lineCount - 1);
                 const endPos = new vscode.Position(endLine, editor.document.lineAt(endLine).text.length);
@@ -1779,7 +1750,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
           // No-agent override — force agent-type results to question.
           // The prompt tells the LLM not to return "agent" when no agent is active,
           // but if it slips through, convert it to a question.
-          if (getSelectedAgent() === 'none' && (result.type === 'agent' || result.type === 'claude' || result.type === 'codex')) {
+          if (getSelectedAgent() === 'none' && (result.type === 'agent' || result.type === 'claude')) {
             result = { ...result, type: 'question' as any };
           }
 
@@ -1796,7 +1767,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
                 pushLog('terminal', `Executed: ${shellCmd}`);
               }
             }
-          } else if (result.type === 'claude' || result.type === 'codex' || result.type === 'agent') {
+          } else if (result.type === 'claude' || result.type === 'agent') {
             // All agent types route to the currently selected agent
             // Send the user's raw transcript, not the LLM-expanded payload
             if (transcript.trim()) {
@@ -1808,8 +1779,12 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
                 typeInSelectedAgent(buildAgentPrompt(transcript));
                 pushLog(agent, transcript);
               } else {
-                await sendToSelectedAgent(buildAgentPrompt(transcript));
-                pushLog(agent, transcript);
+                const sent = await sendToSelectedAgent(buildAgentPrompt(transcript));
+                if (sent) {
+                  pushLog(agent, transcript);
+                } else {
+                  pushLog('error', `Failed to send to ${agent}`);
+                }
               }
             }
           } else if (result.type === 'command') {
@@ -1848,7 +1823,12 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 
               vscode.window.setStatusBarMessage('Applied selection modification from LLM', 3000);
               const diffId = storeDiff(originalText, rawPayload, filename, fullDocBefore, fullDocAfter);
-              pushLog('modification', `Modified selection in ${filename} (lines ${startLine + 1}–${endLine + 1})`, diff || undefined, diffId);
+              const newPayloadLines = rawPayload.split('\n').length;
+              const newEndLine = startLine + newPayloadLines;
+              const rangeLabel = scopeRange
+                ? `lines ${scopeRange.start}–${scopeRange.end} → ${scopeRange.start}–${newEndLine}`
+                : `lines ${startLine + 1}–${endLine + 1} → ${startLine + 1}–${newEndLine}`;
+              pushLog('modification', `Modified ${filename} (${rangeLabel})`, diff || undefined, diffId);
               // Immediately mark the new diff as undoable, then recheck all after a delay
               sidebar?.postState({ undoableDiffIds: [diffId] });
               setTimeout(() => notifyStaleDiffs(), 150);
@@ -1861,7 +1841,13 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
               const fullDocAfter = editor.document.getText();
               vscode.window.setStatusBarMessage('Applied modification from LLM', 3000);
               const diffId = storeDiff(fullDocBefore, newText, filename, fullDocBefore, fullDocAfter);
-              pushLog('modification', `Modified ${filename}`, diff || undefined, diffId);
+              const beforeLineCount = fullDocBefore.split('\n').length;
+              const afterLineCount = fullDocAfter.split('\n').length;
+              const lineChange = afterLineCount - beforeLineCount;
+              const fullModeLabel = lineChange !== 0
+                ? `Modified ${filename} (${beforeLineCount} → ${afterLineCount} lines)`
+                : `Modified ${filename} (${beforeLineCount} lines)`;
+              pushLog('modification', fullModeLabel, diff || undefined, diffId);
               // Immediately mark the new diff as undoable, then recheck all after a delay
               sidebar?.postState({ undoableDiffIds: [diffId] });
               setTimeout(() => notifyStaleDiffs(), 150);
@@ -1876,10 +1862,15 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
               // Route to the selected agent
               if (isAgentModeActive()) {
                 typeInSelectedAgent(buildAgentPrompt(transcript));
+                pushLog(agent as LogEntry['kind'], transcript);
               } else {
-                await sendToSelectedAgent(buildAgentPrompt(transcript));
+                const sent = await sendToSelectedAgent(buildAgentPrompt(transcript));
+                if (sent) {
+                  pushLog(agent as LogEntry['kind'], transcript);
+                } else {
+                  pushLog('error', `Failed to send to ${agent}`);
+                }
               }
-              pushLog(agent as LogEntry['kind'], transcript);
             } else {
               // implicit fallback = user didn't say "quick question" but no agent is selected
               const implicitFallback = !isQuickQuestion && agent === 'none';
@@ -1887,13 +1878,71 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
             }
           }
 
+          reportProgress?.('Listening...');
+          }; // end handleTranscript
+
+          // --- STT dispatch ---
+          if (sttProvider === 'assemblyai') {
+            // Persistent WS session — one connection handles multiple turns.
+            // This avoids "too many concurrent sessions" from rapid open/close.
+            for await (const t of model!.transcribeStreamAssemblyAITurns(pcm, (partial: string) => {
+              if (partial) reportProgress?.(partial);
+            })) {
+              if (__mantraPaused) break;
+              await handleTranscript(t);
+              if (__mantraPaused) break;
+            }
+          } else {
+            let transcript: string;
+            if (isBatchMode) {
+              const mantraCfg = vscode.workspace.getConfiguration('mantra');
+              const silenceTimeoutSec = parseFloat(
+                mantraCfg.get<string>('silenceTimeout') || '2'
+              ) || 1.5;
+              const sensitivity = mantraCfg.get<string>('sensitivity') || 'medium';
+              reportProgress?.('Recording... (speak, then pause to send)');
+              if (sttProvider === 'assemblyai-batch') {
+                transcript = await model!.transcribeBatchAssemblyAI(pcm, (status) => {
+                  reportProgress?.(status);
+                }, silenceTimeoutSec, () => __mantraPaused && !__stopAndTranscribe, sensitivity);
+              } else {
+                transcript = await model!.transcribeBatch(pcm, (status) => {
+                  reportProgress?.(status);
+                }, silenceTimeoutSec, () => __mantraPaused && !__stopAndTranscribe, sensitivity);
+              }
+            } else {
+              // Deepgram: stream audio with live transcription
+              transcript = await model!.transcribeStream(pcm, (partial) => {
+                if (partial) reportProgress?.(partial);
+              });
+            }
+            await handleTranscript(transcript);
+          }
         });
+        aaiSessionRetries = 0; // successful iteration — reset retry counter
       } catch (err: any) {
         const msg = String(err?.message || err);
-        console.error('[Mantra] Loop iteration error:', msg);
+        const elapsed = Date.now() - loopStart;
+        console.error(`[Mantra] Loop iteration ${loopIteration} error after ${elapsed}ms: ${msg}`);
 
-        // Stop retrying on connection/auth errors (400, 401, 403)
-        if (/400|401|403|Unexpected server response|API key/i.test(msg)) {
+        // Concurrent-session errors (1008/3009): retryable — old session needs time to expire
+        if (/concurrent session|Concurrency limit/i.test(msg)) {
+          aaiSessionRetries++;
+          if (aaiSessionRetries > 5) {
+            vscode.window.showErrorMessage(`Mantra: concurrent session error persists after ${aaiSessionRetries} retries. Stopping.`);
+            __mantraPaused = true;
+            pauseRecording();
+            break;
+          }
+          const wait = Math.min(aaiSessionRetries * 2000, 8000);
+          console.log(`[Mantra] Concurrent session error — retry ${aaiSessionRetries}/5 after ${wait}ms`);
+          reportProgress?.(`Session conflict — retrying (${aaiSessionRetries}/5)...`);
+          await new Promise((res) => setTimeout(res, wait));
+          continue;
+        }
+
+        // Stop retrying on connection/auth errors
+        if (/400|401|403|Unexpected server response|API key|Authentication failed/i.test(msg)) {
           vscode.window.showErrorMessage(`Mantra STT error: ${msg}`);
           __mantraPaused = true;
           pauseRecording();
@@ -1901,7 +1950,20 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         }
 
         // For transient errors, wait before retrying
+        console.log('[Mantra] Transient error, retrying in 2s...');
         await new Promise((res) => setTimeout(res, 2000));
+      }
+
+      const elapsed = Date.now() - loopStart;
+      console.log(`[Mantra] === Loop iteration ${loopIteration} done in ${elapsed}ms ===`);
+
+      // Safeguard: prevent rapid cycling — each iteration should take at least 3s.
+      // If it completed faster, something went wrong (stream died, WS rejected, etc.)
+      const MIN_ITERATION_MS = 3000;
+      if (elapsed < MIN_ITERATION_MS && !__mantraPaused) {
+        const wait = MIN_ITERATION_MS - elapsed;
+        console.log(`[Mantra] Iteration too fast (${elapsed}ms < ${MIN_ITERATION_MS}ms), waiting ${wait}ms`);
+        await new Promise((res) => setTimeout(res, wait));
       }
 
       // Stop & Transcribe: pause after this iteration completes
@@ -2038,20 +2100,20 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     () => vscode.commands.executeCommand('workbench.action.openSettings', '@id:mantra.aquavoiceApiKey')
   );
 
-  context.subscriptions.push(openSettingsCmd, editCerebrasCmd, editGroqCmd, editDeepgramCmd, editAquavoiceCmd);
+  const editAssemblyaiCmd = vscode.commands.registerCommand(
+    'mantra.editAssemblyaiApiKey',
+    () => vscode.commands.executeCommand('workbench.action.openSettings', '@id:mantra.assemblyaiApiKey')
+  );
+
+  context.subscriptions.push(openSettingsCmd, editCerebrasCmd, editGroqCmd, editDeepgramCmd, editAquavoiceCmd, editAssemblyaiCmd);
 
   // Track terminal command history for Claude context
   context.subscriptions.push(...initTerminalHistory());
   // Keep context file in sync after every terminal command
   onTerminalCommand(() => writeContextFile());
 
-  // Focus Claude Code sidebar panel (routes to selected agent)
+  // Focus Claude Code panel
   const focusClaudeDisposable = vscode.commands.registerCommand('mantra.focusClaude', () => {
-    focusSelectedAgent();
-  });
-
-  // Focus Codex terminal (routes to selected agent)
-  const focusCodexDisposable = vscode.commands.registerCommand('mantra.focusCodex', () => {
     focusSelectedAgent();
   });
 
@@ -2076,7 +2138,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 
   // Agent backend change from sidebar
   sidebar.onAgentChange((agent) => {
-    __selectedAgent = agent as 'claude' | 'codex' | 'none';
+    __selectedAgent = agent as 'claude' | 'none';
     const cfg = vscode.workspace.getConfiguration('mantra');
     cfg.update('agentBackend', agent, vscode.ConfigurationTarget.Global);
     console.log(`[Mantra] Agent backend changed to: ${agent}`);
@@ -2085,41 +2147,45 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       vscode.commands.executeCommand('mantra.pause');
     }
 
-    if (agent === 'none') {
-      // No agent — don't close anything, just update state
-      sidebar?.postState({ agentBackend: agent, agentInstalled: true });
-    } else {
-      // Close the other agent's terminal to enforce mutual exclusivity
-      if (agent === 'claude') {
-        closeCodexTerminal();
-      } else {
-        closeClaudeTerminal();
-      }
-
-      // Check if the new agent is installed and push status to sidebar
-      const installed = agent === 'claude' ? true : checkCliInstalled('codex');
-      sidebar?.postState({ agentBackend: agent, agentInstalled: installed });
-    }
+    sidebar?.postState({ agentBackend: agent, agentInstalled: true });
+    pushLog('info', `Agent → ${agent === 'claude' ? 'Claude Code' : 'None'}`);
   });
 
   // LLM provider change from sidebar
+  const llmLabels: Record<string, string> = { groq: 'Groq', cerebras: 'Cerebras' };
   sidebar.onProviderChange((provider) => {
     const cfg = vscode.workspace.getConfiguration('mantra');
     cfg.update('llmProvider', provider, vscode.ConfigurationTarget.Global);
     if (model) model.setProvider(provider as any);
     console.log(`[Mantra] LLM provider changed to: ${provider}`);
-    // Stop recording without transcribing when settings change
+    pushLog('info', `LLM \u2192 ${llmLabels[provider] || provider}`);
+    if (__mantraSessionActive) {
+      vscode.commands.executeCommand('mantra.pause');
+    }
+  });
+
+  // LLM model change from sidebar
+  sidebar.onModelChange((modelId) => {
+    const cfg = vscode.workspace.getConfiguration('mantra');
+    cfg.update('llmModel', modelId, vscode.ConfigurationTarget.Global);
+    if (model) model.setModel(modelId);
+    console.log(`[Mantra] LLM model changed to: ${modelId}`);
+    pushLog('info', `Model \u2192 ${modelId}`);
     if (__mantraSessionActive) {
       vscode.commands.executeCommand('mantra.pause');
     }
   });
 
   // STT provider change from sidebar
+  const sttLabels: Record<string, string> = {
+    deepgram: 'Deepgram', aquavoice: 'Aqua Voice',
+    assemblyai: 'AssemblyAI (Streaming)', 'assemblyai-batch': 'AssemblyAI (Batch)',
+  };
   sidebar.onSttProviderChange((provider) => {
     const cfg = vscode.workspace.getConfiguration('mantra');
     cfg.update('sttProvider', provider, vscode.ConfigurationTarget.Global);
     console.log(`[Mantra] STT provider changed to: ${provider}`);
-    // Stop recording without transcribing when settings change
+    pushLog('info', `STT \u2192 ${sttLabels[provider] || provider}`);
     if (__mantraSessionActive) {
       vscode.commands.executeCommand('mantra.pause');
     }
@@ -2130,17 +2196,19 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     const cfg = vscode.workspace.getConfiguration('mantra');
     cfg.update('silenceTimeout', timeout, vscode.ConfigurationTarget.Global);
     console.log(`[Mantra] Silence timeout changed to: ${timeout}s`);
-    // Stop recording without transcribing when settings change
+    pushLog('info', `Silence timeout \u2192 ${timeout}s`);
     if (__mantraSessionActive) {
       vscode.commands.executeCommand('mantra.pause');
     }
   });
 
   // Sensitivity change from sidebar
+  const sensitivityLabels: Record<string, string> = { low: 'Low', medium: 'Medium', high: 'High' };
   sidebar.onSensitivityChange((sensitivity) => {
     const cfg = vscode.workspace.getConfiguration('mantra');
     cfg.update('sensitivity', sensitivity, vscode.ConfigurationTarget.Global);
     console.log(`[Mantra] Sensitivity changed to: ${sensitivity}`);
+    pushLog('info', `Sensitivity \u2192 ${sensitivityLabels[sensitivity] || sensitivity}`);
     if (__mantraSessionActive) {
       vscode.commands.executeCommand('mantra.pause');
     }
@@ -2148,12 +2216,10 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 
   // Install agent from sidebar
   sidebar.onInstallAgent(() => {
-    const agent = getSelectedAgent();
-    const pkg = agent === 'codex' ? '@openai/codex' : '@anthropic-ai/claude-code';
-    const installTerminal = vscode.window.createTerminal({ name: `Install ${agent}`, isTransient: true });
+    const installTerminal = vscode.window.createTerminal({ name: 'Install Claude Code', isTransient: true });
     installTerminal.show(true);
-    installTerminal.sendText(`npm install -g ${pkg}`, true);
-    console.log(`[Mantra] Installing ${agent} via npm`);
+    installTerminal.sendText('npm install -g @anthropic-ai/claude-code', true);
+    console.log('[Mantra] Installing Claude Code via npm');
   });
 
   // Microphone change from sidebar dropdown
@@ -2167,6 +2233,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     sidebar?.postState({ mic: label, micArgs: args });
     vscode.window.setStatusBarMessage(`Mantra mic set: ${label}`, 3000);
     console.log(`[Mantra] Microphone changed to: ${label}`);
+    pushLog('info', `Mic \u2192 ${label}`);
     // Stop recording without transcribing so the new mic is used on next start
     if (__mantraSessionActive) {
       vscode.commands.executeCommand('mantra.pause');
@@ -2251,17 +2318,26 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       return;
     }
     sidebar?.postState({ pttActive: true });
-    onVolume((level) => sidebar?.postState({ volume: level }));
+    let lastPttVolumePush = 0;
+    onVolume((level) => {
+      const now = Date.now();
+      if (now - lastPttVolumePush < 250) return;
+      lastPttVolumePush = now;
+      sidebar?.postState({ volume: level });
+    });
 
     try {
       await startMicStream(context, async (pcm) => {
-        sidebar?.postState({ mic: getMicName() });
 
         // Always use batch mode for PTT — user controls when to stop
         let transcript: string;
         const sttProvider = (vscode.workspace.getConfiguration('mantra').get<string>('sttProvider') || 'deepgram').trim();
         if (sttProvider === 'aquavoice') {
           transcript = await model!.transcribeBatch(pcm, undefined, 999);
+        } else if (sttProvider === 'assemblyai-batch') {
+          transcript = await model!.transcribeBatchAssemblyAI(pcm, undefined, 999);
+        } else if (sttProvider === 'assemblyai') {
+          transcript = await model!.transcribeStreamAssemblyAI(pcm);
         } else {
           transcript = await model!.transcribeStream(pcm);
         }
@@ -2269,7 +2345,6 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         if (!transcript) return;
 
         // Same filtering as main loop
-        transcript = transcript.replace(/\bcodecs\b/gi, 'codex');
         transcript = transcript.replace(/\bdysfunction\b/gi, 'this function');
         transcript = transcript.replace(/\bdis function\b/gi, 'this function');
 
@@ -2337,7 +2412,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         }
 
         // No-agent override — force agent-type results to question (same as main loop)
-        if (getSelectedAgent() === 'none' && (result.type === 'agent' || result.type === 'claude' || result.type === 'codex')) {
+        if (getSelectedAgent() === 'none' && (result.type === 'agent' || result.type === 'claude')) {
           result = { ...result, type: 'question' as any };
         }
 
@@ -2354,7 +2429,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
               pushLog('terminal', `Executed: ${shellCmd}`);
             }
           }
-        } else if (result.type === 'claude' || result.type === 'codex' || result.type === 'agent') {
+        } else if (result.type === 'claude' || result.type === 'agent') {
           // Send the user's raw transcript, not the LLM-expanded payload
           if (transcript.trim()) {
             const agent = getSelectedAgent();
@@ -2364,8 +2439,9 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
               typeInSelectedAgent(buildAgentPrompt(transcript));
               pushLog(agent, transcript);
             } else {
-              await sendToSelectedAgent(buildAgentPrompt(transcript));
-              pushLog(agent, transcript);
+              const sent = await sendToSelectedAgent(buildAgentPrompt(transcript));
+              if (sent) { pushLog(agent, transcript); }
+              else { pushLog('error', `Failed to send to ${agent}`); }
             }
           }
         } else if (result.type === 'command') {
@@ -2466,10 +2542,11 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     const cfg = vscode.workspace.getConfiguration('mantra');
     const agent = cfg.get<string>('agentBackend') || 'claude';
     const provider = cfg.get<string>('llmProvider') || 'groq';
+    const llmModel = cfg.get<string>('llmModel') || '';
     const stt = cfg.get<string>('sttProvider') || 'deepgram';
     const silenceTimeout = cfg.get<string>('silenceTimeout') || '2';
     const sensitivity = cfg.get<string>('sensitivity') || 'medium';
-    const installed = agent === 'claude' ? true : checkCliInstalled('codex');
+    const installed = true;
     const cmdOnly = cfg.get<boolean>('commandsOnly', false);
     const sendCtx = cfg.get<boolean>('sendContext', true);
     const micArgs = cfg.get<string>('microphoneInput') || '';
@@ -2480,6 +2557,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       agentBackend: agent,
       agentInstalled: installed,
       llmProvider: provider,
+      llmModel,
       sttProvider: stt,
       silenceTimeout,
       sensitivity,
@@ -2524,7 +2602,6 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     editGroqCmd,
     editDeepgramCmd,
     focusClaudeDisposable,
-    focusCodexDisposable,
     focusAgentDisposable,
     testMicCmd
   );

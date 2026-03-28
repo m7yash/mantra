@@ -2,7 +2,7 @@ import * as vscode from 'vscode';
 
 export interface LogEntry {
   time: string;           // HH:MM:SS
-  kind: 'transcript' | 'command' | 'modification' | 'terminal' | 'question' | 'claude' | 'codex' | 'error' | 'info';
+  kind: 'transcript' | 'command' | 'modification' | 'terminal' | 'question' | 'claude' | 'error' | 'info';
   text: string;           // main text
   diff?: string;          // unified diff for modifications
   diffId?: number;        // ID to open full diff in a tab
@@ -21,9 +21,10 @@ export interface SidebarState {
   pttActive?: boolean;    // push-to-talk active
   routerPrompt?: string;  // main LLM system prompt
   selectionPrompt?: string; // selection model system prompt
-  agentBackend?: string;  // 'claude' | 'codex'
+  agentBackend?: string;  // 'claude' | 'none'
   agentInstalled?: boolean; // whether selected agent CLI is installed
   llmProvider?: string;   // 'groq' | 'cerebras'
+  llmModel?: string;      // model ID for the selected provider
   commandsOnly?: boolean; // commands-only mode toggle
   sendContext?: boolean;  // send context to agent toggle
   availableMics?: Array<{label: string, args: string}>; // enumerated microphones
@@ -41,6 +42,7 @@ export class MantraSidebarProvider implements vscode.WebviewViewProvider {
   private _onPromptEdit?: (key: string, text: string) => void;
   private _onAgentChange?: (agent: string) => void;
   private _onProviderChange?: (provider: string) => void;
+  private _onModelChange?: (model: string) => void;
   private _onSttProviderChange?: (provider: string) => void;
   private _onSilenceTimeoutChange?: (timeout: string) => void;
   private _onSensitivityChange?: (sensitivity: string) => void;
@@ -67,6 +69,11 @@ export class MantraSidebarProvider implements vscode.WebviewViewProvider {
   /** Register a callback for when the user changes the LLM provider. */
   public onProviderChange(cb: (provider: string) => void): void {
     this._onProviderChange = cb;
+  }
+
+  /** Register a callback for when the user changes the LLM model. */
+  public onModelChange(cb: (model: string) => void): void {
+    this._onModelChange = cb;
   }
 
   /** Register a callback for when the user changes the STT provider. */
@@ -171,6 +178,10 @@ export class MantraSidebarProvider implements vscode.WebviewViewProvider {
       } else if (msg.type === 'providerChange') {
         if (this._onProviderChange && typeof msg.provider === 'string') {
           this._onProviderChange(msg.provider);
+        }
+      } else if (msg.type === 'modelChange') {
+        if (this._onModelChange && typeof msg.model === 'string') {
+          this._onModelChange(msg.model);
         }
       } else if (msg.type === 'sttProviderChange') {
         if (this._onSttProviderChange && typeof msg.provider === 'string') {
@@ -678,7 +689,6 @@ export class MantraSidebarProvider implements vscode.WebviewViewProvider {
     <select id="agentSelect" class="dropdown">
       <option value="none">None</option>
       <option value="claude">Claude Code</option>
-      <option value="codex">Codex</option>
     </select>
     <div id="installWrap" class="install-wrap" style="display:none;">
       <div class="install-msg" id="installMsg">Agent CLI is not installed.</div>
@@ -690,6 +700,11 @@ export class MantraSidebarProvider implements vscode.WebviewViewProvider {
     <select id="providerSelect" class="dropdown">
       <option value="groq">Groq</option>
       <option value="cerebras">Cerebras</option>
+    </select>
+  </div>
+  <div style="padding:2px 0;">
+    <div style="font-size:11px;color:var(--vscode-descriptionForeground);padding:2px 0;">Model</div>
+    <select id="modelSelect" class="dropdown">
     </select>
   </div>
   <div style="padding:2px 0;">
@@ -816,6 +831,7 @@ export class MantraSidebarProvider implements vscode.WebviewViewProvider {
     const installMsg = document.getElementById('installMsg');
     const installBtn = document.getElementById('installBtn');
     const providerSelect = document.getElementById('providerSelect');
+    const modelSelect = document.getElementById('modelSelect');
     const sttSelect = document.getElementById('sttSelect');
     const silenceSelect = document.getElementById('silenceSelect');
     const silenceWrap = document.getElementById('silenceWrap');
@@ -823,6 +839,43 @@ export class MantraSidebarProvider implements vscode.WebviewViewProvider {
     const cmdOnlyHint = document.getElementById('cmdOnlyHint');
     const sendCtxHint = document.getElementById('sendCtxHint');
     const micSelect = document.getElementById('micSelect');
+
+    const CEREBRAS_MODELS = [
+      { value: 'qwen-3-235b-a22b-instruct-2507', label: 'Qwen 3 235B A22B (default)' },
+      { value: 'gpt-oss-120b', label: 'GPT-OSS 120B' },
+      { value: 'llama3.1-8b', label: 'Llama 3.1 8B' },
+      { value: 'zai-glm-4.7', label: 'ZAI GLM 4.7' },
+    ];
+    const GROQ_MODELS = [
+      { value: 'moonshotai/kimi-k2-instruct', label: 'Kimi K2 Instruct (default)' },
+      { value: 'moonshotai/kimi-k2-instruct-0905', label: 'Kimi K2 Instruct 0905' },
+      { value: 'qwen/qwen3-32b', label: 'Qwen 3 32B' },
+      { value: 'llama-3.3-70b-versatile', label: 'Llama 3.3 70B Versatile' },
+      { value: 'openai/gpt-oss-120b', label: 'GPT-OSS 120B' },
+      { value: 'openai/gpt-oss-20b', label: 'GPT-OSS 20B' },
+      { value: 'openai/gpt-oss-safeguard-20b', label: 'GPT-OSS Safeguard 20B' },
+      { value: 'llama-3.1-8b-instant', label: 'Llama 3.1 8B Instant' },
+      { value: 'meta-llama/llama-4-scout-17b-16e-instruct', label: 'Llama 4 Scout 17B' },
+      { value: 'groq/compound', label: 'Groq Compound' },
+      { value: 'groq/compound-mini', label: 'Groq Compound Mini' },
+      { value: 'allam-2-7b', label: 'Allam 2 7B' },
+    ];
+    let savedModelValue = '';
+
+    function populateModelDropdown(provider) {
+      const models = provider === 'cerebras' ? CEREBRAS_MODELS : GROQ_MODELS;
+      modelSelect.innerHTML = '';
+      for (const m of models) {
+        const opt = document.createElement('option');
+        opt.value = m.value;
+        opt.textContent = m.label;
+        modelSelect.appendChild(opt);
+      }
+      if (savedModelValue && models.some(m => m.value === savedModelValue)) {
+        modelSelect.value = savedModelValue;
+      }
+    }
+    populateModelDropdown(providerSelect.value);
 
     toggleBtn.addEventListener('click', () => {
       if (listening) {
@@ -890,6 +943,15 @@ export class MantraSidebarProvider implements vscode.WebviewViewProvider {
     // LLM Provider dropdown
     providerSelect.addEventListener('change', () => {
       vscode.postMessage({ type: 'providerChange', provider: providerSelect.value });
+      savedModelValue = '';
+      populateModelDropdown(providerSelect.value);
+      vscode.postMessage({ type: 'modelChange', model: modelSelect.value });
+    });
+
+    // LLM Model dropdown
+    modelSelect.addEventListener('change', () => {
+      savedModelValue = modelSelect.value;
+      vscode.postMessage({ type: 'modelChange', model: modelSelect.value });
     });
 
     // STT Provider dropdown
@@ -1000,8 +1062,7 @@ export class MantraSidebarProvider implements vscode.WebviewViewProvider {
         if (msg.agentBackend === 'none') {
           focusAgentLabel.textContent = 'Agent';
         } else {
-          const label = msg.agentBackend === 'codex' ? 'Codex' : 'Claude';
-          focusAgentLabel.textContent = label;
+          focusAgentLabel.textContent = 'Claude';
         }
       }
 
@@ -1009,14 +1070,19 @@ export class MantraSidebarProvider implements vscode.WebviewViewProvider {
         if (msg.agentInstalled || agentSelect.value === 'none') {
           installWrap.style.display = 'none';
         } else {
-          const name = agentSelect.value === 'codex' ? 'Codex' : 'Claude Code';
-          installMsg.textContent = name + ' is not installed.';
+          installMsg.textContent = 'Claude Code is not installed.';
           installWrap.style.display = '';
         }
       }
 
       if (msg.llmProvider !== undefined) {
         providerSelect.value = msg.llmProvider;
+        populateModelDropdown(msg.llmProvider);
+      }
+
+      if (msg.llmModel !== undefined) {
+        savedModelValue = msg.llmModel;
+        modelSelect.value = msg.llmModel;
       }
 
       if (msg.sttProvider !== undefined) {

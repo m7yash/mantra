@@ -117,6 +117,24 @@ function resolveAppName(spoken: string): string {
   return APP_ALIASES[spoken.toLowerCase()] || spoken;
 }
 
+// Common app names that should be opened via `open -a` even without an alias.
+// When VS Code is focused and the spoken name isn't in this set or APP_ALIASES,
+// we fall through to the file opener instead of blindly running `open -a`.
+const WELL_KNOWN_APPS = new Set([
+  'safari', 'chrome', 'firefox', 'brave', 'arc', 'edge', 'opera', 'vivaldi',
+  'terminal', 'iterm', 'warp', 'alacritty', 'kitty', 'hyper',
+  'finder', 'activity monitor', 'system preferences', 'system settings',
+  'slack', 'discord', 'zoom', 'teams', 'telegram', 'messages', 'mail',
+  'spotify', 'music', 'notes', 'reminders', 'calendar', 'contacts',
+  'preview', 'photos', 'keynote', 'pages', 'numbers',
+  'xcode', 'android studio', 'intellij', 'webstorm', 'pycharm',
+  'figma', 'sketch', 'photoshop', 'illustrator',
+  'docker', 'docker desktop', 'tableplus', 'sequel pro', 'postico',
+  'notion', 'obsidian', 'bear', 'evernote', 'todoist', 'things',
+  'github desktop', 'sourcetree', 'tower', 'gitkraken',
+  'raycast', 'alfred', '1password', 'bitwarden',
+]);
+
 // ─── Polite prefix stripping ─────────────────────────────────────────────────
 
 function stripPolitePrefix(s: string): string {
@@ -191,24 +209,31 @@ export async function trySystemCommand(tc: string, vscFocused: boolean): Promise
   }
 
   // ── Open apps: "open Safari", "open VS Code", "open IDE" ──
+  // When VS Code is focused, only handle known app names — let unknown names
+  // fall through so the file opener (textOps) can try to match workspace files.
   const appMatch = tc.match(/^open\s+(.+)$/i);
   if (appMatch) {
     const raw = appMatch[1].replace(/[.,!?;:]+$/, '').trim();
+    const rawLower = raw.toLowerCase();
     const appName = resolveAppName(raw);
-    exec(`open -a "${appName}"`, (err) => {
-      if (err) {
-        // If alias resolution failed, try the raw name
-        if (appName !== raw) {
-          exec(`open -a "${raw}"`, (err2) => {
-            if (err2) vscode.window.showWarningMessage(`Could not open "${raw}": ${err2.message}`);
-          });
-        } else {
-          vscode.window.showWarningMessage(`Could not open "${appName}": ${err.message}`);
+    const isKnownApp = appName !== raw || WELL_KNOWN_APPS.has(rawLower);
+    if (isKnownApp || !vscFocused) {
+      exec(`open -a "${appName}"`, (err) => {
+        if (err) {
+          // If alias resolution failed, try the raw name
+          if (appName !== raw) {
+            exec(`open -a "${raw}"`, (err2) => {
+              if (err2) vscode.window.showWarningMessage(`Could not open "${raw}": ${err2.message}`);
+            });
+          } else {
+            vscode.window.showWarningMessage(`Could not open "${appName}": ${err.message}`);
+          }
         }
-      }
-    });
-    vscode.window.setStatusBarMessage(`Opening ${appName}...`, 2000);
-    return true;
+      });
+      vscode.window.setStatusBarMessage(`Opening ${appName}...`, 2000);
+      return true;
+    }
+    // Not a known app and VS Code is focused — fall through to file opener
   }
 
   // ── Press <key>: "press enter", "press escape", etc. ──

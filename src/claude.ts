@@ -96,8 +96,9 @@ export function isClaudeTerminal(t: vscode.Terminal): boolean {
  * Detection strategy:
  * 1. If we already have a tracked, live terminal reference → reuse it.
  * 2. Run claude-vscode.terminal.open and watch for a NEW terminal.
- * 3. If no new terminal appears, check if the extension focused an existing
- *    one that became the activeTerminal — adopt it if it looks like Claude.
+ * 3. If no new terminal appears, scan ALL terminals for one with "Claude"
+ *    in the name — the terminal may already exist but Mantra lost the ref.
+ * 4. Fallback: check activeTerminal.
  */
 async function ensureClaudeTerminal(): Promise<vscode.Terminal | null> {
   // If we already have a live, tracked Claude terminal, reuse it
@@ -109,6 +110,16 @@ async function ensureClaudeTerminal(): Promise<vscode.Terminal | null> {
     // Dead — clear it
     _claudeTerminal = null;
     _claudeTerminalReady = false;
+  }
+
+  // Quick check: maybe a Claude terminal already exists but we lost the ref
+  // (e.g. extension reloaded, or terminal was opened before Mantra started).
+  const existingClaude = vscode.window.terminals.find(t => /claude/i.test(t.name));
+  if (existingClaude) {
+    console.log(`[Mantra] Found existing Claude terminal: "${existingClaude.name}"`);
+    _claudeTerminal = existingClaude;
+    _claudeTerminalReady = true; // already running
+    return _claudeTerminal;
   }
 
   // Snapshot current terminals before the open command
@@ -147,14 +158,22 @@ async function ensureClaudeTerminal(): Promise<vscode.Terminal | null> {
     }
   }
 
-  // No new terminal appeared — the extension may have focused an existing one.
-  // Adopt it if the active terminal looks like Claude (name set by the extension).
-  await sleep(500);
+  // No new terminal appeared — scan ALL terminals for one with "Claude" in the name.
+  // The open command may have focused an existing terminal without creating a new one.
+  const claudeTerminal = vscode.window.terminals.find(t => /claude/i.test(t.name));
+  if (claudeTerminal) {
+    console.log(`[Mantra] Adopting existing Claude terminal (post-open): "${claudeTerminal.name}"`);
+    _claudeTerminal = claudeTerminal;
+    _claudeTerminalReady = true;
+    return _claudeTerminal;
+  }
+
+  // Last resort: check activeTerminal even if name doesn't match
   const active = vscode.window.activeTerminal;
   if (active && /claude/i.test(active.name)) {
-    console.log(`[Mantra] Adopting existing Claude terminal: "${active.name}"`);
+    console.log(`[Mantra] Adopting active Claude terminal: "${active.name}"`);
     _claudeTerminal = active;
-    _claudeTerminalReady = true; // assume it's already initialized since it existed
+    _claudeTerminalReady = true;
     return _claudeTerminal;
   }
 
@@ -172,12 +191,12 @@ async function ensureClaudeTerminal(): Promise<vscode.Terminal | null> {
 /**
  * Send a prompt to Claude Code terminal and ensure it executes.
  */
-export async function sendToClaudePanel(prompt: string): Promise<void> {
+export async function sendToClaudePanel(prompt: string): Promise<boolean> {
   const wasReady = _claudeTerminalReady;
   const terminal = await ensureClaudeTerminal();
   if (!terminal) {
     vscode.window.showWarningMessage('Could not open Claude Code terminal.');
-    return;
+    return false;
   }
 
   if (!_claudeTerminalReady) {
@@ -196,6 +215,7 @@ export async function sendToClaudePanel(prompt: string): Promise<void> {
   setClaudeMode(true);
   vscode.window.setStatusBarMessage('Typed in Claude (press Enter to send)', 3000);
   console.log(`[Mantra] Typed in Claude: ${prompt.slice(0, 80)}...`);
+  return true;
 }
 
 /**

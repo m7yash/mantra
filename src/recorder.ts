@@ -465,7 +465,8 @@ export async function startMicStream(
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     logError(`Stream handler error: ${msg}`);
-    vscode.window.showErrorMessage(`Stream handler error: ${msg}`);
+    // Re-throw so the caller's retry logic (e.g. concurrent-session backoff) can handle it
+    throw err;
   } finally {
     if (currentRecProcess) {
       terminate(currentRecProcess);

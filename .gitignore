@@ -6,3 +6,4 @@ node_modules
 old
 src/.DS_Store
 .DS_Store
+test-assemblyai-*.js

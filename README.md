@@ -2,7 +2,7 @@
 
 Code with your thoughts, not your keyboard. Extremely accurate, absurdly fast.
 
-Mantra listens to your voice and instantly edits code, runs IDE commands, executes terminal commands, interacts with AI agents (Claude Code or Codex), or answers your questions — all hands-free.
+Mantra listens to your voice and instantly edits code, runs IDE commands, executes terminal commands, interacts with an AI agent (Claude Code), or answers your questions — all hands-free.
 
 Get started for free!
 
@@ -17,14 +17,14 @@ Discord: https://discord.gg/fmWCScWuUn
 
 ## How It Works
 
-1. **Speech-to-text:** Audio is streamed to **Deepgram Flux** (conversational STT with built-in turn detection) or sent as a complete file to **Aqua Voice** (Avalon model). A keyterm list biases recognition toward programming vocabulary and identifiers from your open file. You can switch between STT providers in the sidebar.
+1. **Speech-to-text:** Audio is streamed to **Deepgram Flux** (conversational STT with built-in turn detection), **AssemblyAI** (streaming or batch), or sent as a complete file to **Aqua Voice** (Avalon model). The most frequent identifiers from your open file are sent as keyterms to bias recognition toward your code's vocabulary. You can switch between STT providers in the sidebar.
 2. **Context-aware routing:** When VS Code is the active window, the transcript goes through the full pipeline — commands, text operations, and LLM routing. **When another app is in the foreground** (Safari, Terminal, etc.), only system-level commands (navigation, scrolling, tab switching, clicking, app management) are processed. VS Code commands and code modifications are never accidentally triggered on other apps.
-3. **LLM routing (VS Code focused):** The transcript + editor context + terminal history is sent to **Groq** (or Cerebras). The LLM classifies the instruction and returns one of five types:
+3. **LLM routing (VS Code focused):** The transcript + editor context + terminal history is sent to **Groq** (default: Kimi K2) or **Cerebras** (default: Qwen 3 235B). You can choose from multiple models per provider via the Model dropdown in the sidebar. Thinking/reasoning is automatically suppressed for maximum speed (Qwen models get `/no_think`, GPT-OSS models use `reasoning_effort: low`). The LLM classifies the instruction and returns one of five types:
    - **command** — runs a VS Code command (75+ supported)
    - **modification** — applies a small, targeted edit to the current file (changes are highlighted in green/red)
    - **question** — shows the answer in a separate panel (only used when no agent is available or the user says "quick question"). When no agent is selected, a note suggests selecting one for better handling of complex requests.
    - **terminal** — translates natural language to a shell command and executes it
-   - **agent** — forwards an intelligent, context-aware prompt to the selected AI agent (Claude Code or Codex). This is the default for any non-trivial task when an agent is active. When no agent is selected, agent-type requests fall back to the quick question system.
+   - **agent** — forwards an intelligent, context-aware prompt to Claude Code. This is the default for any non-trivial task when an agent is active. When no agent is selected, agent-type requests fall back to the quick question system.
 4. **Pre-LLM shortcuts:** Common phrases like "undo", "save", "scroll down", "enter", "delete", "focus editor", "ask Claude ...", and keyboard shortcuts are handled instantly without waiting for the LLM.
 
 ---
@@ -36,6 +36,7 @@ Discord: https://discord.gg/fmWCScWuUn
 ### 2) Provide API keys on first run
 
 - **Deepgram** — speech-to-text (streaming). Get a key at https://deepgram.com (free $200 credit).
+- **AssemblyAI** (optional) — speech-to-text (streaming or batch). Get a key at https://www.assemblyai.com/dashboard. Select "AssemblyAI" from the STT provider dropdown in the sidebar.
 - **Aqua Voice** (optional) — speech-to-text (batch). Get a key at https://app.aquavoice.com/api-dashboard. Select "Aqua Voice" from the STT provider dropdown in the sidebar.
 - **Groq** (recommended) or **Cerebras** — LLM routing. Get a key at https://console.groq.com or https://cloud.cerebras.ai
 
@@ -72,6 +73,13 @@ Run **"Mantra: Start Recording"** from the Command Palette, press `Ctrl+Shift+1`
 - "toggle sidebar", "zen mode", "zoom in"
 - "focus editor", "focus terminal", "focus explorer"
 - "next tab", "previous tab", "first tab", "tab three"
+
+### Opening files
+- "open script dot py" → opens `script.py`
+- "open main" → fuzzy-matches `main.py`, `main.ts`, etc.
+- "open auth dot controller dot ts" → opens `auth.controller.ts`
+
+File names are fuzzy-matched against the workspace. You can say the extension ("dot py") or omit it — Mantra will find the closest match. When VS Code is focused, "open X" tries to match a workspace file first; only if no file matches does it try to open a macOS app.
 
 ### Terminal commands (VS Code focused)
 - "run this file" → `python3 main.py`
@@ -242,25 +250,20 @@ When VS Code is **not** the frontmost window, these additional commands route ke
 
 ---
 
-## Agent Integration (Claude Code & Codex)
+## Agent Integration (Claude Code)
 
-Mantra supports two AI agent backends: **Claude Code** (via the VS Code extension) and **Codex** (via `npm install -g @openai/codex`). Only one agent can be active at a time — select which one to use from the **Agent** dropdown in the sidebar Settings section.
+Mantra supports **Claude Code** as an AI agent backend via the [Claude Code VS Code extension](https://marketplace.visualstudio.com/items?itemName=anthropic.claude-code). Select **Claude Code** from the **Agent** dropdown in the sidebar Settings section. The `claude` CLI must be in your PATH.
 
 When an agent is active, it becomes the **default destination** for any non-trivial request. You don't need to say "ask Claude" — just speak naturally and complex tasks are automatically routed to the agent. Simple edits ("change this to a while loop", "rename this variable") still go through the fast modification path.
 
 When no agent is selected (**None**), all requests that would normally be routed to an agent are handled locally — complex coding tasks become file modifications and knowledge questions are answered via the quick question system.
 
-### Prerequisites
-
-- **Claude Code** — Install the [Claude Code VS Code extension](https://marketplace.visualstudio.com/items?itemName=anthropic.claude-code). The `claude` CLI must be in your PATH.
-- **Codex** — Install via `npm install -g @openai/codex`. If the CLI is not found, an install button appears in the sidebar.
-
 ### Sending prompts to the agent
-Say "ask Claude to refactor this function", "tell Codex to add unit tests", "ask agent how to fix that", or "ask LLM to explain this error". All of these — regardless of which name you use — route to whichever agent is currently selected. When "Send Context to Agent" is enabled, the activity log and terminal history are written to a context file that the agent can reference.
+Say "ask Claude to refactor this function", "ask agent how to fix that", or "ask LLM to explain this error". When "Send Context to Agent" is enabled, the activity log and terminal history are written to a context file that the agent can reference.
 
 You can also just say what you want without mentioning any agent — "add an AI opponent", "improve the performance", "add authentication" — and it will be routed to the agent automatically.
 
-Common phrases like "ask Claude ...", "tell Codex ...", "ask agent ...", "ask LLM ...", "ask AI ..." are intercepted before the LLM for instant routing. These also work when VS Code is not focused.
+Common phrases like "ask Claude ...", "ask agent ...", "ask LLM ...", "ask AI ..." are intercepted before the LLM for instant routing. These also work when VS Code is not focused.
 
 ### When the agent is running (VS Code focused)
 While the agent terminal is active:
@@ -270,7 +273,7 @@ While the agent terminal is active:
 - **"up" / "down"** — arrow keys for navigating selection menus
 - **"yes" / "ok" / "go ahead"** — confirms the current selection
 - **"focus editor" / "go back"** — switches back to the editor
-- **"focus agent" / "open claude" / "open codex"** — switches to (or opens) the agent terminal
+- **"focus agent" / "open claude"** — switches to (or opens) the agent terminal
 
 ### Agent CLI commands (voice)
 - "new conversation" / "clear conversation"
@@ -298,17 +301,17 @@ Mantra adds a panel to the VS Code activity bar. From the sidebar you can:
   - **Undo / Redo** — revert or re-apply a specific change. After undoing, the button becomes "Redo this change" if the file hasn't been modified. Grayed out if the file has changed since.
 - **Focus** — quick buttons to switch between Editor, Terminal, Agent, Explorer, Search, and Source Control
 - **Settings**
-  - **Agent** — choose between Claude Code and Codex (only one active at a time). Shows an install button if the selected agent's CLI is not found.
-  - **LLM Provider** — Groq or Cerebras
-  - **STT Provider** — Deepgram (streaming, real-time) or Aqua Voice (batch, sends full audio file)
-  - **Silence Timeout** — (Aqua Voice only) how many seconds of silence before auto-transcribing. Default: 2s.
-  - **Sensitivity** — (Aqua Voice only) microphone sensitivity for silence detection: Low (noisy environments), Medium (default), High (quiet environments).
-  - **Model** — select the LLM model (options update based on provider)
+  - **Agent** — choose Claude Code or None.
+  - **LLM Provider** — Groq (default) or Cerebras
+  - **Model** — select the LLM model. Options update based on the selected provider. Defaults: Kimi K2 Instruct (Groq), Qwen 3 235B A22B (Cerebras). Thinking/reasoning is automatically minimized for all models.
+  - **STT Provider** — Deepgram (streaming), AssemblyAI (streaming or batch), or Aqua Voice (batch)
+  - **Silence Timeout** — (Aqua Voice / AssemblyAI batch only) how many seconds of silence before auto-transcribing. Default: 2s.
+  - **Sensitivity** — (Aqua Voice / AssemblyAI batch only) microphone sensitivity for silence detection: Low (noisy environments), Medium (default), High (quiet environments).
   - **Microphone** — pick your input device. Changing the microphone while recording stops the current session (without transcribing) so the new mic is used on next start.
   - **Commands-Only Mode** — toggle with ON/OFF indicator (see below)
   - **Send Context to Agent** — toggle ON/OFF. When enabled (default), the activity log and terminal history are written to a temp file and referenced in prompts sent to the agent. Turn off to send only the raw transcript.
   - **All Settings** / **Keyboard Shortcuts**
-- **API Keys** — configure Deepgram, Aqua Voice, Groq, and Cerebras keys
+- **API Keys** — configure Deepgram, AssemblyAI, Aqua Voice, Groq, and Cerebras keys
 - **Router Prompt** — view and edit the main LLM system prompt directly in the sidebar
 
 ---
@@ -353,7 +356,6 @@ Mantra automatically captures terminal commands and their output via VS Code she
 - **Test Microphone** — available from sidebar or Command Palette
 - **Focus Agent Panel** — available from sidebar or Command Palette
 - **Focus Claude Code Panel** — available from Command Palette
-- **Focus Codex Panel** — available from Command Palette
 
 All shortcuts can be customized in **File > Preferences > Keyboard Shortcuts** (search "mantra"), or via the Keyboard Shortcuts button in the sidebar.
 
@@ -363,11 +365,12 @@ All shortcuts can be customized in **File > Preferences > Keyboard Shortcuts** (
 
 Open **Settings > Extensions > Mantra** to adjust:
 
-- **Agent Backend** — Choose between **Claude Code**, **Codex**, or **None**. Only one agent can be active at a time.
+- **Agent Backend** — Choose between **Claude Code** or **None**.
 - **LLM Provider** — Choose between **Groq** (default) or **Cerebras**.
-- **STT Provider** — Choose between **Deepgram** (streaming, default) or **Aqua Voice** (batch).
-- **Silence Timeout** — (Aqua Voice only) Seconds of silence before auto-transcribing. Default: 2s.
-- **Reasoning Effort** — Low (default), medium, or high.
+- **Model** — Choose which model to use for the selected provider. Defaults: **Kimi K2 Instruct** (Groq), **Qwen 3 235B A22B** (Cerebras). Leave empty for the default. Thinking/reasoning is automatically suppressed for speed (`/no_think` for Qwen models, `reasoning_effort: low` for GPT-OSS).
+- **STT Provider** — Choose between **Deepgram** (streaming, default), **AssemblyAI** (streaming or batch), or **Aqua Voice** (batch).
+- **Silence Timeout** — (Aqua Voice / AssemblyAI batch only) Seconds of silence before auto-transcribing. Default: 2s.
+- **Reasoning Effort** — Low (default), medium, or high. Controls thinking depth for models that support it (GPT-OSS).
 - **Prompt** — Customize the LLM system prompt (also editable in the sidebar).
 - **Commands Only** — Bypass the LLM entirely. Only pre-mapped commands and text operations work.
 - **Send Context to Agent** — Include activity log and terminal history when sending prompts to the AI agent. Default: on.
@@ -375,13 +378,43 @@ Open **Settings > Extensions > Mantra** to adjust:
 
 ---
 
+## Supported Models
+
+Select your preferred model from the **Model** dropdown in the sidebar. The list updates based on the selected LLM provider.
+
+### Cerebras
+| Model | Notes |
+|-------|-------|
+| **Qwen 3 235B A22B** (default) | 235B MoE (22B active). Best quality + speed balance. 100% routing accuracy, 222ms avg latency. Thinking auto-suppressed. |
+| GPT-OSS 120B | OpenAI open-source 120B. Reasoning effort set to low. |
+| Llama 3.1 8B | Fast, lightweight. Best for commands-only or low-complexity tasks. |
+| ZAI GLM 4.7 | GLM-family model. |
+
+### Groq
+| Model | Notes |
+|-------|-------|
+| **Kimi K2 Instruct** (default) | 1T MoE. Fastest TTFT (~133ms). Strong routing and terminal accuracy. |
+| Kimi K2 Instruct 0905 | Variant of K2. Slightly faster, slightly less accurate on complex routing. |
+| Qwen 3 32B | Solid quality but may hit token limits on large files. Thinking auto-suppressed. |
+| Llama 3.3 70B Versatile | High quality (81%) but higher latency (~484ms). |
+| GPT-OSS 120B | OpenAI open-source 120B. Reasoning effort set to low. |
+| GPT-OSS 20B | Lighter GPT-OSS variant. |
+| GPT-OSS Safeguard 20B | GPT-OSS with safety guardrails. |
+| Llama 3.1 8B Instant | Ultra-fast, lightweight. |
+| Llama 4 Scout 17B | Meta's Llama 4 Scout. |
+| Groq Compound | Groq's compound model with tool use. |
+| Groq Compound Mini | Lighter compound variant. |
+| Allam 2 7B | Arabic-focused model. |
+
+---
+
 ## Privacy and Data Handling (Important)
 
 - **Your responsibility:** Do not dictate passwords, tokens, or proprietary text you don't want transmitted. Pause listening when working with sensitive files. DO NOT USE MANTRA WHEN EDITING FILES WITH SENSITIVE CREDENTIALS. If Mantra detects sensitive information in your file, it will warn you before sending it to the LLM.
-- **What goes to the speech model:** A small list of keyterms (command phrases, language keywords, identifiers from the open file) is sent to Deepgram to bias recognition. No full source code is sent to Deepgram or Aqua Voice. When using Aqua Voice, the full audio recording is sent as a file for batch transcription.
+- **What goes to the speech model:** The most frequent identifiers from your open file are sent as keyterms to Deepgram, AssemblyAI, or Aqua Voice to bias recognition toward your code's vocabulary. No full source code is sent. When using Aqua Voice or AssemblyAI batch mode, the full audio recording is sent as a file for batch transcription.
 - **What goes to the LLM:** The current file's full contents, file name, cursor context, and terminal history.
 - **Secrets & storage:** API keys are stored in VS Code Secret Storage. No keys are written to disk in plaintext.
-- **For more:** See Deepgram's and Groq's/Cerebras's privacy policies. Other than the API usage described above, Mantra runs entirely locally and does not collect, save, or share any of your data.
+- **For more:** See Deepgram's, AssemblyAI's, and Groq's/Cerebras's privacy policies. Other than the API usage described above, Mantra runs entirely locally and does not collect, save, or share any of your data.
 
 ---
 
@@ -390,9 +423,8 @@ Open **Settings > Extensions > Mantra** to adjust:
 - **No mic on macOS** — Allow VS Code under *System Settings > Privacy & Security > Microphone*.
 - **Mouse click not working** — Allow VS Code under *System Settings > Privacy & Security > Accessibility*.
 - **"Command not found: claude"** — Add the CLI to your PATH: `echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.zshrc && source ~/.zshrc`
-- **Codex not found** — Install via `npm install -g @openai/codex`, or use the install button in the sidebar.
 - **Ghost transcriptions ("two", "four")** — These are filtered automatically. If ambient noise is high, consider adjusting your microphone position.
-- **File not found** — Include punctuation words when speaking filenames: "open auth dot controller dot ts".
+- **File not found** — Include punctuation words when speaking filenames: "open auth dot controller dot ts". You can also just say the name without an extension ("open script") and Mantra will fuzzy-match it.
 - **Logs** — Check **View > Output > Mantra** for detailed logs including which microphone is being used. The sidebar Activity Log also shows a history of all transcripts and actions.
 
 ---

@@ -347,13 +347,14 @@ export async function handleCommand(utterance: string, _context?: vscode.Extensi
   // ---------- Highly-specific, parameterized ops first ----------
 
   // open <filename>  / open file <filename>  (supports spoken "dot p y")
+  // Also handles bare names like "open script" → fuzzy matches script.py
   {
     const mOpen = s.match(/^open\s+(?:file\s+)?(.+)$/i);
     if (mOpen) {
       const spokenName = mOpen[1].trim();
-      // Only treat as filename if it looks file-like OR the phrase included file punctuation words
-      const looksFileLike = /[./\\]/.test(spokenName) || /\b(dot|period|point|underscore|dash|hyphen|slash|backslash)\b/i.test(spokenName);
-      if (looksFileLike) {
+      // Skip if it matches a known command alias (e.g. "open terminal", "open settings")
+      const COMMAND_WORDS = new Set(['terminal', 'settings', 'sidebar', 'panel', 'explorer', 'search', 'extensions', 'debug', 'source control', 'output', 'problems', 'palette']);
+      if (!COMMAND_WORDS.has(spokenName.toLowerCase())) {
         const ok = await openClosestFileByName(spokenName);
         if (ok) return true;
       }

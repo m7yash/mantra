@@ -1,21 +1,39 @@
 import Cerebras from '@cerebras/cerebras_cloud_sdk';
 import * as vscode from 'vscode';
-import { canonicalCommandPhrases } from './commands';
 
-export type ReqType = 'command' | 'modification' | 'question' | 'terminal' | 'claude' | 'codex' | 'agent';
+export type ReqType = 'command' | 'modification' | 'question' | 'terminal' | 'claude' | 'agent';
 
 export type LlmProvider = 'cerebras' | 'groq';
 
 // Default models per provider
-export const CEREBRAS_MODEL = 'gpt-oss-120b';
-export const GROQ_MODEL_DEFAULT = 'openai/gpt-oss-120b';
+export const CEREBRAS_MODEL = 'qwen-3-235b-a22b-instruct-2507';
+export const GROQ_MODEL_DEFAULT = 'moonshotai/kimi-k2-instruct';
+
+// Models that require /no_think appended to user messages to suppress reasoning
+const NO_THINK_MODELS = new Set([
+  'qwen-3-235b-a22b-instruct-2507',
+  'qwen/qwen3-32b',
+]);
+
+// Models that support the reasoning_effort parameter (only GPT-OSS variants)
+const REASONING_EFFORT_MODELS = new Set([
+  'gpt-oss-120b',
+  'openai/gpt-oss-120b',
+  'openai/gpt-oss-20b',
+  'openai/gpt-oss-safeguard-20b',
+]);
 
 export type RouteResult = { type: ReqType; payload: string; raw: string; selectionMode?: boolean };
+
+// Module-level: prevent AssemblyAI concurrent-session errors (1008)
+let _aaiActiveWs: any = null;          // currently open WS (if any)
+let _aaiLastCloseTime = 0;             // timestamp of last WS close
+const AAI_SESSION_COOLDOWN_MS = 3000;  // minimum gap between sessions
 
 export function parseLabeledPayload(raw: string): RouteResult {
   const s = (raw || '').trim();
   const fence = s.startsWith('```') ? s.replace(/^```[a-zA-Z]*\n?/, '').replace(/```\s*$/, '') : s;
-  const LABELS = 'question|command|modification|terminal|claude|codex|agent';
+  const LABELS = 'question|command|modification|terminal|claude|agent';
   // Capture EVERYTHING after the label word — do not eat spaces (they may be indentation)
   const labelRe = new RegExp(`^\\s*(${LABELS})\\b([\\s\\S]*)$`, 'i');
   const lineRe = new RegExp(`^(${LABELS})\\b`, 'i');
@@ -49,7 +67,7 @@ export function parseLabeledPayload(raw: string): RouteResult {
     payload = rawPayload.replace(/^\s+/, '');
   }
 
-  const VALID: Set<string> = new Set(['question', 'command', 'modification', 'terminal', 'claude', 'codex', 'agent']);
+  const VALID: Set<string> = new Set(['question', 'command', 'modification', 'terminal', 'claude', 'agent']);
   const type: ReqType = VALID.has(t) ? t : 'question';
   return { type, payload, raw };
 }
@@ -122,64 +140,6 @@ export class RouteFormatError extends Error {
   constructor(msg: string) { super(msg); this.name = 'RouteFormatError'; }
 }
 
-const MAX_KEYTERMS = 100;
-const MAX_TOKEN_APPROX = 500;
-
-/** Language keywords (Python, Java, JavaScript, TypeScript). */
-function languageKeywords(): string[] {
-  const py = [
-    'False', 'None', 'True', 'and', 'as', 'assert', 'async', 'await', 'break', 'class', 'continue', 'def', 'del', 'elif', 'else', 'except', 'finally', 'for', 'from', 'global', 'if', 'import', 'in', 'is', 'lambda', 'nonlocal', 'not', 'or', 'pass', 'raise', 'return', 'try', 'while', 'with', 'yield'
-  ];
-  const java = [
-    'abstract', 'assert', 'boolean', 'break', 'byte', 'case', 'catch', 'char', 'class', 'const', 'continue', 'default', 'do', 'double', 'else', 'enum', 'extends', 'final', 'finally', 'float', 'for', 'goto', 'if', 'implements', 'import', 'instanceof', 'int', 'interface', 'long', 'native', 'new', 'package', 'private', 'protected', 'public', 'return', 'short', 'static', 'strictfp', 'super', 'switch', 'synchronized', 'this', 'throw', 'throws', 'transient', 'try', 'void', 'volatile', 'while', 'true', 'false', 'null'
-  ];
-  const js = [
-    'await', 'break', 'case', 'catch', 'class', 'const', 'continue', 'debugger', 'default', 'delete', 'do', 'else', 'enum', 'export', 'extends', 'false', 'finally', 'for', 'function', 'if', 'import', 'in', 'instanceof', 'let', 'new', 'null', 'return', 'super', 'switch', 'this', 'throw', 'true', 'try', 'typeof', 'var', 'void', 'while', 'with', 'yield'
-  ];
-  const ts = [
-    'abstract', 'any', 'as', 'asserts', 'bigint', 'boolean', 'break', 'case', 'catch', 'class', 'const', 'continue', 'declare', 'default', 'do', 'else', 'enum', 'export', 'extends', 'false', 'finally', 'for', 'function', 'if', 'implements', 'import', 'in', 'infer', 'instanceof', 'interface', 'is', 'keyof', 'let', 'module', 'namespace', 'never', 'new', 'null', 'number', 'object', 'private', 'protected', 'public', 'readonly', 'require', 'return', 'satisfies', 'static', 'string', 'super', 'switch', 'symbol', 'this', 'throw', 'true', 'try', 'type', 'typeof', 'undefined', 'unique', 'unknown', 'var', 'void', 'while', 'with', 'yield'
-  ];
-  return [...py, ...java, ...js, ...ts].map(s => s.toLowerCase());
-}
-
-/** Small language-aware vocab to bias code-y words. */
-function codeVocabForLanguage(languageId: string | undefined): string[] {
-  const common = [
-    'print', 'for', 'range', 'length', 'len', 'if', 'elif', 'else', 'while',
-    'function', 'def', 'class', 'return', 'variable', 'const', 'let',
-    'import', 'export', 'async', 'await', 'try', 'except', 'catch',
-    'comment', 'uncomment', 'rename', 'refactor', 'format', 'run'
-  ];
-  if (!languageId) return common;
-
-  switch ((languageId || '').toLowerCase()) {
-    case 'python':
-      return Array.from(new Set([
-        ...common,
-        'def', 'class', 'list', 'dict', 'tuple', 'with', 'yield', 'pip'
-      ]));
-    case 'javascript':
-    case 'typescript':
-      return Array.from(new Set([
-        ...common,
-        'console log', 'console.log', 'require', 'npm', 'yarn', 'tsc'
-      ]));
-    case 'cpp':
-    case 'c++':
-      return Array.from(new Set([
-        ...common,
-        'std cout', 'std::cout', 'printf', 'include', 'namespace', 'using'
-      ]));
-    case 'java':
-      return Array.from(new Set([
-        ...common,
-        'system out println', 'system.out.println', 'public static void main'
-      ]));
-    default:
-      return common;
-  }
-}
-
 /** Pull frequent identifiers from the active file to bias ASR toward in-file terms. */
 function identifiersFromActiveEditor(max = 30): string[] {
   const ed = vscode.window.activeTextEditor;
@@ -196,265 +156,14 @@ function identifiersFromActiveEditor(max = 30): string[] {
   return sorted;
 }
 
-/** Rough token budget: count whitespace-separated words across phrases. */
-function approxTokenCount(phrases: string[]): number {
-  let total = 0;
-  for (const p of phrases) total += (p.trim().split(/\s+/).filter(Boolean).length);
-  return total;
-}
-
-/** Big, internal pool: language keywords + coding actions + IDE ops + CLI + natural phrases + variants. */
-function seedKeytermsBase(): string[] {
-  const set = new Set<string>();
-
-  // 1) Language keywords
-  for (const kw of languageKeywords()) set.add(kw);
-
-  // 2) Coding verbs/targets combos
-  const verbs = [
-    'add', 'insert', 'append', 'prepend', 'remove', 'delete', 'erase', 'drop', 'strip',
-    'replace', 'swap', 'rename', 'retitle', 'relabel',
-    'move', 'shift', 'reorder', 'sort', 'group',
-    'extract', 'inline', 'refactor', 'rebuild', 'rewrite', 'reorganize', 'optimize', 'simplify', 'clean up', 'deduplicate',
-    'wrap', 'unwrap', 'surround', 'guard', 'check', 'validate', 'assert',
-    'enable', 'disable', 'toggle',
-    'comment', 'uncomment',
-    'format', 'reformat', 'beautify', 'pretty print', 'align', 'indent', 'outdent',
-    'run', 'execute', 'launch', 'start', 'stop', 'restart',
-    'debug', 'profile', 'trace', 'benchmark',
-    'compile', 'build', 'rebuild', 'test',
-    'open', 'close', 'save', 'save all',
-    'undo', 'redo', 'copy', 'paste', 'cut', 'duplicate',
-    'search', 'find', 'find in files', 'replace in files',
-    'fold', 'unfold', 'collapse', 'expand',
-    'select', 'deselect', 'highlight',
-    'go to', 'jump to', 'navigate to', 'peek',
-    'generate', 'create', 'make', 'convert', 'transform', 'change',
-    'documentation'
-  ];
-  const targets = [
-    'line', 'lines', 'block', 'selection', 'file', 'files', 'folder', 'project', 'workspace',
-    'variable', 'variables', 'constant', 'constants', 'parameter', 'parameters', 'argument', 'arguments',
-    'function', 'functions', 'method', 'methods', 'class', 'classes', 'interface', 'enum', 'type alias', 'property', 'field',
-    'loop', 'for loop', 'while loop', 'do while loop', 'if statement', 'else block', 'try catch', 'try finally',
-    'import', 'exports', 'return statement', 'condition', 'expression', 'statement', 'docstring', 'comment',
-    'constructor', 'getter', 'setter'
-  ];
-  for (const v of verbs) for (const t of targets) set.add(`${v} ${t}`);
-
-  // 3) IDE/editor operations
-  const ideOps = [
-    'open file', 'new file', 'close file', 'save file', 'save all', 'reopen closed editor',
-    'toggle sidebar', 'toggle panel', 'toggle terminal', 'toggle zen mode', 'toggle word wrap', 'toggle minimap',
-    'show command palette', 'command palette', 'quick open', 'open recent', 'toggle explorer', 'focus explorer',
-    'focus search', 'focus source control', 'focus debug', 'focus extensions', 'focus problems', 'focus output', 'focus terminal',
-    'go to definition', 'peek definition', 'go to references', 'go to implementation', 'jump to bracket',
-    'go to type definition', 'go to symbol', 'show hover', 'trigger suggest', 'autocomplete', 'accept suggestion',
-    'next tab', 'previous tab', 'move tab left', 'move tab right', 'split editor', 'toggle split layout',
-    'toggle breakpoint', 'add breakpoint', 'remove breakpoint', 'enable breakpoint', 'disable breakpoint',
-    'start debugging', 'stop debugging', 'restart debugging', 'continue', 'step over', 'step into', 'step out',
-    'format document', 'format selection', 'organize imports', 'fix imports',
-    'expand selection', 'shrink selection', 'delete line', 'duplicate line', 'join lines', 'transpose letters',
-    'select all', 'select word', 'select line', 'select current word', 'select current line',
-    'select to end of line', 'select to start of line',
-    'move to start of word', 'move to end of word', 'move to start of line', 'move to end of line',
-    'move line up', 'move line down',
-    'delete word', 'delete word forward', 'delete word backward',
-    'toggle comment', 'toggle block comment', 'toggle line comment',
-    'next error', 'previous error', 'next problem', 'previous problem',
-    'next change', 'previous change', 'next diff', 'previous diff',
-    'fold', 'unfold', 'fold all', 'unfold all', 'fold at cursor', 'unfold at cursor',
-    'toggle fullscreen', 'show problems', 'show notifications', 'clear notifications', 'toggle breadcrumbs',
-    'compare with saved', 'reveal in finder', 'copy file path', 'copy relative path',
-    'markdown preview', 'toggle read only',
-    'run task', 'run build task', 'run test task',
-    'sort lines', 'sort lines ascending', 'sort lines descending',
-    'uppercase', 'lowercase', 'title case', 'to upper', 'to lower', 'to title',
-    'trim whitespace', 'trim trailing whitespace',
-    'clear terminal', 'terminal scroll up', 'terminal scroll down',
-    'terminal scroll to top', 'terminal scroll to bottom'
-  ];
-  for (const s of ideOps) set.add(s);
-
-  // 4) File ops & CLI-ish
-  const cliOps = [
-    'open folder', 'create folder', 'make directory', 'remove directory', 'delete folder', 'rename folder',
-    'copy file', 'move file', 'rename file', 'delete file',
-    'list directory', 'change directory', 'clear terminal', 'new terminal', 'split terminal', 'kill terminal',
-    'run build', 'run tests', 'start server', 'stop server', 'kill process', 'run program', 'compile project'
-  ];
-  for (const s of cliOps) set.add(s);
-
-  // 4b) Git operations
-  const gitOps = [
-    'stage file', 'git stage', 'stage changes', 'git add', 'stage all', 'git stage all', 'git add all',
-    'unstage file', 'git unstage', 'unstage changes',
-    'commit', 'git commit', 'commit changes',
-    'push', 'git push', 'push changes',
-    'pull', 'git pull', 'pull changes',
-    'checkout branch', 'git checkout', 'switch branch', 'change branch',
-    'show diff', 'git diff', 'view diff',
-    'stash', 'git stash', 'stash changes',
-    'pop stash', 'git stash pop', 'unstash',
-  ];
-  for (const s of gitOps) set.add(s);
-
-  // 4c) System / browser / window commands
-  const systemTerms = [
-    // browser navigation
-    'go back', 'go forward', 'back', 'forward',
-    'refresh', 'refresh page', 'hard refresh', 'reload',
-    'new tab', 'close tab', 'reopen tab', 'reopen closed tab',
-    'next tab', 'previous tab', 'last tab',
-    'first tab', 'second tab', 'third tab', 'fourth tab', 'fifth tab',
-    'tab one', 'tab two', 'tab three', 'tab four', 'tab five',
-    'address bar', 'url bar', 'bookmark page', 'bookmark this',
-    'dev tools', 'developer tools', 'inspect element', 'inspect',
-    'open console', 'javascript console', 'view source', 'page source',
-    // window / app management
-    'open VS Code', 'open versus code', 'open IDE', 'open code',
-    'open Visual Studio Code', 'switch to', 'click',
-    'minimize', 'minimize window', 'close window',
-    'full screen', 'next window', 'previous window',
-    'hide app', 'show desktop', 'mission control',
-    // mouse
-    'move mouse', 'move cursor', 'click', 'double click', 'right click',
-    // key simulation
-    'press enter', 'press escape', 'press tab', 'press space',
-    'press delete', 'press backspace',
-    'press up', 'press down', 'press left', 'press right',
-    'type', 'dictate',
-    // terminal shortcuts
-    'kill process', 'control c', 'control d', 'control z', 'control r',
-    'control a', 'control e', 'control u', 'control w',
-    'interrupt', 'clear terminal', 'reverse search', 'search history',
-    'exit terminal', 'exit shell', 'clear line', 'delete word',
-    'tab complete', 'run last command', 'repeat last command',
-    // system utilities
-    'spotlight', 'search computer', 'screenshot', 'take screenshot',
-    'screenshot selection', 'lock screen',
-    // scrolling & navigation
-    'arrow up', 'arrow down', 'arrow left', 'arrow right',
-    'scroll up', 'scroll down', 'scroll up a lot', 'scroll down a lot',
-    'page up', 'page down', 'scroll to top', 'scroll to bottom',
-    'up five times', 'down five times', 'up ten times', 'down ten times',
-    'select all', 'select word', 'select line',
-    'select to end', 'select to start',
-    'zoom in', 'zoom out', 'reset zoom',
-    // finder
-    'show hidden files', 'go to folder', 'new folder',
-  ];
-  for (const s of systemTerms) set.add(s);
-
-  // 4d) Mantra-specific terms — voice control keywords that must be recognized accurately
-  const mantraTerms = [
-    'Claude', 'ask Claude', 'tell Claude', 'hey Claude', 'focus Claude',
-    'Codex', 'codex', 'ask Codex', 'tell Codex', 'hey Codex', 'focus Codex',
-    'agent', 'ask agent', 'tell agent', 'hey agent', 'focus agent',
-    'LLM', 'ask LLM', 'tell LLM', 'ask the LLM', 'ask AI',
-    'execute that', 'run that', 'hit enter', 'press enter',
-    'accept changes', 'reject changes', 'new conversation',
-    'pause', 'resume', 'stop listening', 'start listening',
-    'mantra',
-    'this function', 'this class', 'this method', 'this block',
-    'this loop', 'this if statement', 'this variable',
-    'select this function', 'select this class', 'select this method',
-  ];
-  for (const s of mantraTerms) set.add(s);
-
-  // 5) Natural language instruction patterns
-  const patterns = [
-    'change this to', 'convert this to', 'make this a', 'turn this into', 'rewrite this as',
-    'replace x with y', 'replace this with', 'swap these two',
-    'add error handling', 'add null check', 'add bounds check', 'add logging', 'add comment',
-    'remove this line', 'remove this block', 'remove the print statement',
-    'extract a function', 'extract method', 'inline variable', 'inline function',
-    'split this function', 'merge these functions',
-    'wrap this in an if', 'wrap this in try catch', 'wrap this in try finally', 'guard this with null check',
-    'rename this variable to', 'rename this function to', 'rename this class to',
-    'change the return type to', 'make this parameter optional', 'make this parameter required',
-    'format the code', 'fix indentation', 'align these lines', 'sort these lines',
-    'explain this code', 'write a docstring', 'generate documentation for this function'
-  ];
-  for (const s of patterns) set.add(s);
-
-  // 6) Singleton codey tokens
-  const singletons = [
-    'print', 'console log', 'console.log', 'for', 'while', 'if', 'else', 'elif', 'range', 'len',
-    'function', 'def', 'class', 'return', 'import', 'export', 'const', 'let', 'var', 'async', 'await', 'try', 'except', 'catch',
-    'true', 'false', 'null', 'undefined', 'void', 'static', 'public', 'private', 'protected', 'readonly', 'override', 'abstract', 'interface', 'enum', 'type', 'keyof', 'infer'
-  ];
-  for (const s of singletons) set.add(s);
-
-  // 7) Action-object variants
-  const actions = ['add', 'remove', 'delete', 'insert', 'append', 'prepend', 'replace', 'rename', 'move', 'copy', 'cut', 'paste', 'duplicate', 'comment', 'uncomment', 'format', 'run', 'debug', 'build', 'test', 'compile', 'execute', 'start', 'stop', 'restart', 'toggle'];
-  const objects = ['selection', 'current line', 'current file', 'current block', 'word', 'symbol', 'cursor line', 'this function', 'this class', 'this method', 'this loop', 'this condition', 'imports', 'document'];
-  for (const a of actions) for (const o of objects) set.add(`${a} ${o}`);
-
-  // 8) Navigation variants
-  const navs = ['go to', 'jump to', 'navigate to', 'open', 'peek at', 'show'];
-  const dests = ['definition', 'declaration', 'type definition', 'references', 'implementation', 'file', 'folder', 'symbol', 'next error', 'previous error', 'next warning', 'previous warning', 'line', 'column'];
-  for (const n of navs) for (const d of dests) set.add(`${n} ${d}`);
-
-  // 9) Loop conversions and condition phrases
-  const loopForms = ['for loop', 'while loop', 'do while loop', 'for each loop'];
-  const convActions = ['convert to', 'change to', 'turn into', 'rewrite as', 'refactor to', 'make it a'];
-  for (const c of convActions) for (const l of loopForms) set.add(`${c} ${l}`);
-  const conditionForms = ['if statement', 'if else', 'switch statement', 'ternary'];
-  for (const c of conditionForms) { set.add(`add ${c}`); set.add(`wrap in ${c}`); }
-
-  // 10) Parameterized rename-style phrases (kept moderate to avoid explosion)
-  const subjects = ['variable', 'function', 'method', 'class', 'parameter', 'argument', 'property', 'field', 'module', 'file'];
-  const ops2 = ['rename to', 'change name to', 'set name to', 'make it', 'set it to', 'change it to'];
-  const names = ['result', 'output', 'count', 'index', 'value', 'item', 'element', 'data', 'buffer', 'temp', 'flag', 'config', 'handler', 'callback', 'state'];
-  for (const subj of subjects) for (const op2 of ops2) for (const name of names) {
-    if (set.size < 4000) set.add(`${subj} ${op2} ${name}`);
-  }
-
-  return Array.from(set);
-}
-
-/** Build final keyterms list with priorities and budgets. */
-function buildKeytermsFinal(basePool: string[]): string[] {
-  const set = new Set<string>();
-
-  // 1) Big internal pool
-  for (const t of basePool) set.add(t.toLowerCase());
-
-  // 2) Canonical command phrases (high value)
-  try {
-    for (const c of canonicalCommandPhrases()) {
-      const s = String(c).toLowerCase().trim();
-      if (s) set.add(s);
-    }
-  } catch { /* ignore */ }
-
-  // 3) Language-aware vocab
-  for (const t of codeVocabForLanguage(vscode.window.activeTextEditor?.document.languageId)) {
-    set.add(t.toLowerCase());
-  }
-
-  // 4) In-file identifiers (top N)
-  for (const id of identifiersFromActiveEditor(30)) set.add(id);
-
-  // Cap by count first
-  let arr = Array.from(set);
-  if (arr.length > MAX_KEYTERMS) arr = arr.slice(0, MAX_KEYTERMS);
-  // Then enforce rough token budget
-  while (approxTokenCount(arr) > MAX_TOKEN_APPROX && arr.length > 1) {
-    arr.pop();
-  }
-  return arr;
-}
-
-
 export class Model {
   private cerebras: Cerebras | null = null;
   private groqApiKey: string = '';
   private deepgramApiKey: string = '';
   private aquavoiceApiKey: string = '';
-  private baseKeyterms: string[] = [];
+  private assemblyaiApiKey: string = '';
   private provider: LlmProvider = 'cerebras';
+  private llmModel: string = '';
   private memory: string = '';
 
   constructor(apiKey: string, deepgramApiKey?: string) {
@@ -464,12 +173,21 @@ export class Model {
     if (deepgramApiKey) {
       this.deepgramApiKey = deepgramApiKey;
     }
-    this.baseKeyterms = seedKeytermsBase();
   }
 
   public setProvider(provider: LlmProvider) {
     this.provider = provider;
     console.log(`[Mantra] LLM provider set to: ${provider}`);
+  }
+
+  public setModel(modelId: string) {
+    this.llmModel = modelId;
+    console.log(`[Mantra] LLM model set to: ${modelId || '(default)'}`);
+  }
+
+  public getModel(): string {
+    if (this.llmModel) return this.llmModel;
+    return this.provider === 'groq' ? GROQ_MODEL_DEFAULT : CEREBRAS_MODEL;
   }
 
   public setCerebrasApiKey(apiKey: string) {
@@ -487,6 +205,11 @@ export class Model {
     this.aquavoiceApiKey = apiKey;
   }
 
+  public setAssemblyaiApiKey(apiKey: string) {
+    console.log('[Mantra] Setting AssemblyAI API key:', apiKey ? `${apiKey.slice(0, 8)}...${apiKey.slice(-4)}` : '(empty)');
+    this.assemblyaiApiKey = apiKey;
+  }
+
   public hasLlm(): boolean {
     return this.provider === 'cerebras' ? !!this.cerebras : !!this.groqApiKey;
   }
@@ -497,6 +220,17 @@ export class Model {
     temperature?: number;
     reasoning_effort?: 'low' | 'medium' | 'high';
   }): Promise<string> {
+    // Suppress thinking/reasoning for models that support it
+    if (NO_THINK_MODELS.has(req.model)) {
+      // Append /no_think to the last user message for Qwen models
+      const msgs = req.messages.map((m, i) => {
+        if (m.role === 'user' && i === req.messages.length - 1) {
+          return { ...m, content: m.content + '\n\n/no_think' };
+        }
+        return m;
+      });
+      req = { ...req, messages: msgs };
+    }
     if (this.provider === 'groq') {
       return this.chatTextGroq(req);
     }
@@ -518,12 +252,15 @@ export class Model {
     const apiKey = (this.cerebras as any)?.apiKey ?? '(unknown)';
     console.log(`[Mantra] Cerebras request: model=${req.model}, key=${apiKey ? `${String(apiKey).slice(0, 8)}...${String(apiKey).slice(-4)}` : '(empty)'}`);
     try {
-      const res = await this.cerebras.chat.completions.create({
+      const cerebrasParams: any = {
         model: req.model,
         temperature: req.temperature ?? 0,
         messages: req.messages,
-        reasoning_effort: req.reasoning_effort ?? ((process.env.MANTRA_REASONING_EFFORT as 'low' | 'medium' | 'high') || 'low'),
-      } as any);
+      };
+      if (REASONING_EFFORT_MODELS.has(req.model)) {
+        cerebrasParams.reasoning_effort = req.reasoning_effort ?? ((process.env.MANTRA_REASONING_EFFORT as 'low' | 'medium' | 'high') || 'low');
+      }
+      const res = await this.cerebras.chat.completions.create(cerebrasParams);
       const timeInfo = (res as any)?.time_info;
       const completionTokens = (res as any)?.usage?.completion_tokens ?? 0;
       const completionTime = timeInfo?.completion_time ?? 0;
@@ -568,7 +305,9 @@ export class Model {
           model: modelId,
           temperature: req.temperature ?? 0,
           messages: req.messages,
-          reasoning_effort: req.reasoning_effort ?? ((process.env.MANTRA_REASONING_EFFORT as 'low' | 'medium' | 'high') || 'low'),
+          ...(REASONING_EFFORT_MODELS.has(modelId) ? {
+            reasoning_effort: req.reasoning_effort ?? ((process.env.MANTRA_REASONING_EFFORT as 'low' | 'medium' | 'high') || 'low'),
+          } : {}),
         }),
       });
       if (!resp.ok) {
@@ -612,7 +351,7 @@ export class Model {
     const dgKey = this.deepgramApiKey || process.env.DEEPGRAM_API_KEY || '';
     if (!dgKey) throw new Error('Deepgram API key not set');
 
-    const keyterms = buildKeytermsFinal(this.baseKeyterms || []);
+    const keyterms = identifiersFromActiveEditor(50);
 
     // Build v2/listen URL — only params confirmed in Flux docs
     const params = new URLSearchParams({
@@ -686,7 +425,10 @@ export class Model {
         safetyTimer = setTimeout(() => {
           if (!settled) {
             console.log('[Mantra] Flux safety timeout — resolving with current transcript');
-            safeResolve(transcript);
+            // Resolve directly — don't go through safeResolve which would loop on noise words
+            settled = true;
+            try { ws.close(); } catch { /* noop */ }
+            resolve(transcript);
           }
         }, EOT_SAFETY_MS);
       };
@@ -775,7 +517,12 @@ export class Model {
       ws.on('close', () => {
         console.log('[Mantra] Flux WebSocket closed');
         if (safetyTimer) clearTimeout(safetyTimer);
-        if (!settled) safeResolve(transcript);
+        if (!settled) {
+          // WS is gone — must resolve now even if transcript is empty/noise.
+          // safeResolve would loop via resetSafety on noise words, so bypass it.
+          settled = true;
+          resolve(transcript);
+        }
       });
     });
   }
@@ -936,6 +683,864 @@ export class Model {
   }
 
   /**
+   * Transcribe a complete PCM audio stream via AssemblyAI (batch HTTP POST).
+   *
+   * Buffers all PCM data from the stream, applies silence-based end-of-speech
+   * detection (same as Aqua Voice), uploads audio, submits a transcription job
+   * using Universal 3 Pro, and polls until complete.
+   */
+  async transcribeBatchAssemblyAI(
+    input: NodeJS.ReadableStream,
+    onStatus?: (status: string) => void,
+    silenceTimeoutSec: number = 1.5,
+    isCancelled?: () => boolean,
+    sensitivity: string = 'medium'
+  ): Promise<string> {
+    const apiKey = this.assemblyaiApiKey || process.env.ASSEMBLYAI_API_KEY || '';
+    if (!apiKey) throw new Error('AssemblyAI API key not set');
+
+    // Collect PCM chunks, stop on silence after speech (same logic as Aqua Voice)
+    const chunks: Buffer[] = [];
+    let totalBytes = 0;
+
+    const SAMPLE_RATE = 16000;
+    const BYTES_PER_SAMPLE = 2;
+    const SILENCE_THRESHOLD = sensitivity === 'low' ? 0.03 : sensitivity === 'high' ? 0.005 : 0.015;
+    const SILENCE_TIMEOUT_MS = silenceTimeoutSec * 1000;
+    const MIN_SPEECH_BYTES = SAMPLE_RATE * BYTES_PER_SAMPLE * 0.3;
+
+    await new Promise<void>((resolve) => {
+      let heardSpeech = false;
+      let silenceStart: number | null = null;
+
+      const checkSilence = (chunk: Buffer) => {
+        const samples = Math.floor(chunk.length / BYTES_PER_SAMPLE);
+        if (samples === 0) return;
+        let sum = 0;
+        for (let i = 0; i < samples; i++) {
+          const s = chunk.readInt16LE(i * BYTES_PER_SAMPLE);
+          sum += s * s;
+        }
+        const rms = Math.sqrt(sum / samples) / 32768;
+
+        if (rms >= SILENCE_THRESHOLD) {
+          heardSpeech = true;
+          silenceStart = null;
+        } else if (heardSpeech && totalBytes > MIN_SPEECH_BYTES) {
+          if (!silenceStart) silenceStart = Date.now();
+          else if (Date.now() - silenceStart >= SILENCE_TIMEOUT_MS) {
+            console.log('[Mantra] AssemblyAI batch: silence detected, finalizing recording');
+            input.removeAllListeners('data');
+            resolve();
+          }
+        }
+      };
+
+      input.on('data', (chunk: Buffer) => {
+        chunks.push(chunk);
+        totalBytes += chunk.length;
+        checkSilence(chunk);
+      });
+
+      input.on('end', () => resolve());
+      input.on('error', () => resolve());
+    });
+
+    if (totalBytes < MIN_SPEECH_BYTES) {
+      console.log('[Mantra] AssemblyAI batch: too little audio, skipping');
+      return '';
+    }
+
+    if (isCancelled?.()) {
+      console.log('[Mantra] AssemblyAI batch: cancelled before API call, discarding audio');
+      return '';
+    }
+
+    onStatus?.('Uploading audio...');
+    console.log(`[Mantra] AssemblyAI batch: uploading ${(totalBytes / 1024).toFixed(1)}KB of audio`);
+
+    // Build WAV file in memory
+    const pcmData = Buffer.concat(chunks);
+    const wavHeader = Buffer.alloc(44);
+    const dataSize = pcmData.length;
+    const fileSize = 36 + dataSize;
+    wavHeader.write('RIFF', 0);
+    wavHeader.writeUInt32LE(fileSize, 4);
+    wavHeader.write('WAVE', 8);
+    wavHeader.write('fmt ', 12);
+    wavHeader.writeUInt32LE(16, 16);
+    wavHeader.writeUInt16LE(1, 20);
+    wavHeader.writeUInt16LE(1, 22);
+    wavHeader.writeUInt32LE(SAMPLE_RATE, 24);
+    wavHeader.writeUInt32LE(SAMPLE_RATE * BYTES_PER_SAMPLE, 28);
+    wavHeader.writeUInt16LE(BYTES_PER_SAMPLE, 32);
+    wavHeader.writeUInt16LE(16, 34);
+    wavHeader.write('data', 36);
+    wavHeader.writeUInt32LE(dataSize, 40);
+    const wavBuffer = Buffer.concat([wavHeader, pcmData]);
+
+    // Step 1: Upload audio to AssemblyAI
+    const uploadResp = await fetch('https://api.assemblyai.com/v2/upload', {
+      method: 'POST',
+      headers: {
+        'Authorization': apiKey,
+        'Content-Type': 'application/octet-stream',
+      },
+      body: wavBuffer,
+    });
+    if (!uploadResp.ok) {
+      const body = await uploadResp.text().catch(() => '');
+      throw new Error(`AssemblyAI upload failed: ${uploadResp.status} ${body}`);
+    }
+    const uploadJson: any = await uploadResp.json();
+    const audioUrl = uploadJson.upload_url;
+    if (!audioUrl) throw new Error('AssemblyAI upload returned no URL');
+
+    // Step 2: Submit transcription job with Universal 3 Pro
+    onStatus?.('Transcribing...');
+    const submitResp = await fetch('https://api.assemblyai.com/v2/transcript', {
+      method: 'POST',
+      headers: {
+        'Authorization': apiKey,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        audio_url: audioUrl,
+        speech_models: ['universal-3-pro'],
+        keyterms_prompt: identifiersFromActiveEditor(100),
+      }),
+    });
+    if (!submitResp.ok) {
+      const body = await submitResp.text().catch(() => '');
+      throw new Error(`AssemblyAI transcript submit failed: ${submitResp.status} ${body}`);
+    }
+    const submitJson: any = await submitResp.json();
+    const transcriptId = submitJson.id;
+    if (!transcriptId) throw new Error('AssemblyAI returned no transcript ID');
+
+    // Step 3: Poll for completion
+    const POLL_INTERVAL_MS = 800;
+    const MAX_POLL_MS = 60000;
+    const pollStart = Date.now();
+    while (Date.now() - pollStart < MAX_POLL_MS) {
+      await new Promise(r => setTimeout(r, POLL_INTERVAL_MS));
+
+      const pollResp = await fetch(`https://api.assemblyai.com/v2/transcript/${transcriptId}`, {
+        headers: { 'Authorization': apiKey },
+      });
+      if (!pollResp.ok) continue;
+      const pollJson: any = await pollResp.json();
+
+      if (pollJson.status === 'completed') {
+        const text = (pollJson.text || '').trim();
+        console.log('[Mantra] AssemblyAI batch transcript:', text);
+        return text;
+      }
+      if (pollJson.status === 'error') {
+        throw new Error(`AssemblyAI transcription failed: ${pollJson.error || 'unknown error'}`);
+      }
+      // status is 'queued' or 'processing' — keep polling
+    }
+
+    throw new Error('AssemblyAI transcription timed out after 60s');
+  }
+
+  /**
+   * Transcribe a PCM audio stream using AssemblyAI Universal-3 Pro Streaming (v3/ws).
+   *
+   * Uses the v3 WebSocket endpoint with the u3-rt-pro speech model.
+   * Turn messages with end_of_turn=true signal the final transcript.
+   * ForceEndpoint is sent when the mic stream ends to flush the final turn.
+   * Auth via Authorization header.
+   */
+  async transcribeStreamAssemblyAI(
+    input: NodeJS.ReadableStream,
+    onInterim?: (partial: string) => void
+  ): Promise<string> {
+    const WS = (await import('ws')).default;
+    const apiKey = this.assemblyaiApiKey || process.env.ASSEMBLYAI_API_KEY || '';
+    if (!apiKey) throw new Error('AssemblyAI API key not set');
+
+    const t0 = Date.now();
+    const log = (msg: string) => console.log(`[Mantra] AAI +${Date.now() - t0}ms: ${msg}`);
+
+    // Force-close any lingering WS from a previous session that didn't shut down
+    if (_aaiActiveWs) {
+      log('Force-closing lingering WS from previous session');
+      try {
+        if (_aaiActiveWs.readyState === 1 /* OPEN */) {
+          _aaiActiveWs.send(JSON.stringify({ type: 'Terminate' }));
+        }
+        _aaiActiveWs.terminate(); // hard kill — don't wait for graceful handshake
+      } catch { /* noop */ }
+      _aaiActiveWs = null;
+      await new Promise(r => setTimeout(r, 1500));
+    }
+
+    // Enforce cooldown between sessions so AssemblyAI releases the slot
+    const sinceLast = Date.now() - _aaiLastCloseTime;
+    if (_aaiLastCloseTime > 0 && sinceLast < AAI_SESSION_COOLDOWN_MS) {
+      const wait = AAI_SESSION_COOLDOWN_MS - sinceLast;
+      log(`Cooldown: waiting ${wait}ms before new session`);
+      await new Promise(r => setTimeout(r, wait));
+    }
+
+    const params = new URLSearchParams({
+      speech_model: 'u3-rt-pro',
+      sample_rate: '16000',
+      encoding: 'pcm_s16le',
+      // max silence before turn is force-completed (ms)
+      max_turn_silence: '1500',
+    });
+    // NOTE: keyterms_prompt in the URL causes AssemblyAI to close with 1011.
+    // Send them via sendUpdateConfiguration after connection instead.
+    const keyterms = identifiersFromActiveEditor(100);
+
+    const url = `wss://streaming.assemblyai.com/v3/ws?${params.toString()}`;
+    log(`Connecting (url=${url.length}chars, ${keyterms.length} keyterms pending, key=${apiKey.slice(0, 8)}...)`);
+
+    // AssemblyAI closes the connection (~100ms) if it receives no audio after open.
+    // On macOS, FFmpeg's avfoundation needs 300-500ms to initialize the mic device.
+    // Fix: buffer audio from FFmpeg FIRST, then connect the WS once audio is flowing.
+    // We keep buffering during WS connection so no audio is lost.
+    log('Waiting for first audio from FFmpeg before connecting WS...');
+
+    const FRAME_BYTES = 3200; // 100ms at 16kHz 16-bit mono
+    const MIN_FRAME = 1600;   // 50ms minimum for AssemblyAI
+
+    // Shared buffer — keeps growing from input until WS open handler takes over
+    let sharedBuf = Buffer.alloc(0);
+    let audioChunks = 0;
+    let totalAudioBytes = 0;
+    let wsReady = false; // set true once WS open handler takes over
+
+    const bufferListener = (chunk: Buffer) => {
+      if (!chunk || !chunk.length || wsReady) return;
+      audioChunks++;
+      totalAudioBytes += chunk.length;
+      sharedBuf = Buffer.concat([sharedBuf, chunk]);
+    };
+    input.on('data', bufferListener);
+
+    // Wait until we have at least one full frame (3200 bytes = 100ms)
+    await new Promise<void>((resolveWait, rejectWait) => {
+      const timeout = setTimeout(() => {
+        rejectWait(new Error('Timed out waiting for audio from FFmpeg (5s)'));
+      }, 5000);
+
+      const check = () => {
+        if (sharedBuf.length >= FRAME_BYTES) {
+          clearInterval(poll);
+          clearTimeout(timeout);
+          log(`Audio flowing: ${sharedBuf.length} bytes pre-buffered in ${audioChunks} chunks`);
+          resolveWait();
+        }
+      };
+      // Poll every 20ms (the data listener fills sharedBuf)
+      const poll = setInterval(check, 20);
+      check(); // immediate check
+
+      // If stream dies before we get audio, bail
+      const onEnd = () => { clearInterval(poll); clearTimeout(timeout); rejectWait(new Error('Audio stream ended before any data arrived')); };
+      input.once('end', onEnd);
+      input.once('close', onEnd);
+      input.once('error', (e) => { clearInterval(poll); clearTimeout(timeout); rejectWait(e); });
+    });
+
+    log('Audio confirmed, now connecting WebSocket...');
+
+    return new Promise<string>((resolve, reject) => {
+      let settled = false;
+      let transcript = '';
+
+      const ws = new WS(url, {
+        headers: { Authorization: apiKey },
+      });
+      _aaiActiveWs = ws;
+
+      // Hard-kill backstop: if ws.close() doesn't trigger 'close' within 3s,
+      // terminate the socket so it never lingers.
+      let terminateTimer: NodeJS.Timeout | null = null;
+      const scheduleTerminate = () => {
+        if (!terminateTimer) {
+          terminateTimer = setTimeout(() => {
+            log('Backstop: ws.terminate() — graceful close timed out');
+            try { (ws as any).terminate(); } catch {}
+          }, 3000);
+        }
+      };
+
+      const NOISE_WORDS = new Set([
+        'the', 'a', 'an', 'and', 'uh', 'um', 'oh', 'ah', 'hmm', 'huh',
+        'it', 'is', 'i', 'so', 'but', 'or', 'if', 'of', 'in', 'on',
+        'one', 'two', 'three', 'four', 'five', 'six', 'seven', 'eight',
+        'nine', 'ten', 'to', 'too', 'for', 'ate', 'won',
+        'hey', 'hi', 'bye', 'hm', 'mm',
+      ]);
+      const isNoiseWord = (txt: string): boolean => {
+        if (!txt || !txt.trim()) return true;
+        const clean = txt.trim().replace(/[^a-zA-Z0-9\s]/g, '').trim().toLowerCase();
+        if (!clean) return true;
+        const words = clean.split(/\s+/);
+        if (words.length === 1 && NOISE_WORDS.has(words[0])) return true;
+        if (words.length === 2 && NOISE_WORDS.has(words[0]) && NOISE_WORDS.has(words[1])) return true;
+        return false;
+      };
+
+      // Pending result — we store what to resolve/reject with, but only
+      // actually settle the promise once the WS is fully closed.
+      // This prevents "too many concurrent sessions" from overlapping WS.
+      let pendingResult: { value: string } | null = null;
+      let pendingError: Error | null = null;
+
+      const safeResolve = (txt: string) => {
+        if (settled) return;
+        if (isNoiseWord(txt)) {
+          log(`Ignoring noise word: "${txt}"`);
+          transcript = '';
+          resetSafety();
+          return;
+        }
+        settled = true;
+        log(`RESOLVING with: "${txt}"`);
+        if (safetyTimer) clearTimeout(safetyTimer);
+        pendingResult = { value: txt };
+        // Gracefully terminate the session so AssemblyAI releases the slot
+        try {
+          if (ws.readyState === WS.OPEN) {
+            ws.send(JSON.stringify({ type: 'Terminate' }));
+            log('Sent Terminate for graceful session close');
+          } else {
+            ws.close();
+          }
+        } catch { try { ws.close(); scheduleTerminate(); } catch {} }
+        // Fallback: if Termination response doesn't arrive in 1s, force close
+        setTimeout(() => { try { ws.close(); scheduleTerminate(); } catch {} }, 1000);
+      };
+      const safeReject = (err: unknown) => {
+        if (settled) return;
+        settled = true;
+        const msg = err instanceof Error ? err.message : String(err);
+        log(`REJECTING: ${msg}`);
+        if (safetyTimer) clearTimeout(safetyTimer);
+        pendingError = err instanceof Error ? err : new Error(String(err));
+        try { ws.close(); scheduleTerminate(); } catch { /* noop */ }
+        // reject happens in ws.on('close') after WS is truly shut down
+      };
+
+      // Safety net: if nothing resolves after 8s, use whatever we have
+      const EOT_SAFETY_MS = 8000;
+      let safetyTimer: NodeJS.Timeout | null = null;
+      const resetSafety = () => {
+        if (safetyTimer) clearTimeout(safetyTimer);
+        safetyTimer = setTimeout(() => {
+          if (!settled) {
+            log(`Safety timeout — resolving with: "${transcript}"`);
+            settled = true;
+            pendingResult = { value: transcript };
+            try { ws.close(); scheduleTerminate(); } catch { /* noop */ }
+          }
+        }, EOT_SAFETY_MS);
+      };
+
+      // When the mic stream ends (FFmpeg killed), force-flush the current turn
+      // then terminate the session.
+      const handleStreamEnd = () => {
+        if (settled) return;
+        log(`handleStreamEnd called (wsState=${ws.readyState})`);
+        try {
+          if (ws.readyState === WS.OPEN) {
+            // ForceEndpoint tells AssemblyAI to immediately finalize the current turn
+            ws.send(JSON.stringify({ type: 'ForceEndpoint' }));
+          }
+        } catch { /* noop */ }
+        // Give the server a moment to send the final Turn, then terminate
+        setTimeout(() => {
+          try {
+            if (ws.readyState === WS.OPEN) {
+              ws.send(JSON.stringify({ type: 'Terminate' }));
+            }
+          } catch { /* noop */ }
+        }, 500);
+        // Hard fallback: if we still haven't settled, force-resolve
+        setTimeout(() => {
+          if (!settled) {
+            log(`Force-resolving after stream end: "${transcript}"`);
+            settled = true;
+            if (safetyTimer) clearTimeout(safetyTimer);
+            pendingResult = { value: transcript };
+            try { ws.close(); scheduleTerminate(); } catch { /* noop */ }
+          }
+        }, 2000);
+      };
+
+      ws.on('unexpected-response', (_req: any, res: any) => {
+        let body = '';
+        res.on('data', (chunk: Buffer) => { body += chunk.toString(); });
+        res.on('end', () => {
+          log(`HTTP REJECTION: ${res.statusCode} — ${body}`);
+          safeReject(new Error(`AssemblyAI returned ${res.statusCode}: ${body}`));
+        });
+      });
+
+      ws.on('error', (e: any) => {
+        log(`WS ERROR: ${e?.message || e}`);
+        safeReject(e);
+      });
+
+      ws.on('open', () => {
+        log('WebSocket connected');
+        resetSafety();
+
+        // Send keyterms via UpdateConfiguration (URL param causes 1011)
+        if (keyterms.length > 0) {
+          try {
+            ws.send(JSON.stringify({
+              type: 'UpdateConfiguration',
+              keyterms_prompt: keyterms,
+            }));
+            log(`Sent ${keyterms.length} keyterms via UpdateConfiguration`);
+          } catch { /* noop */ }
+        }
+
+        // Take over from the shared pre-buffer and stop the pre-buffer listener
+        wsReady = true;
+        input.removeListener('data', bufferListener);
+        let audioBuf = sharedBuf;
+        const preBufferedBytes = audioBuf.length;
+        sharedBuf = Buffer.alloc(0); // free reference
+
+        // Immediately flush the pre-buffered frames so AssemblyAI gets audio right away
+        const flushFrames = () => {
+          while (audioBuf.length >= FRAME_BYTES && ws.readyState === WS.OPEN) {
+            const frame = audioBuf.subarray(0, FRAME_BYTES);
+            audioBuf = audioBuf.subarray(FRAME_BYTES);
+            try { ws.send(frame); } catch { /* ignore backpressure */ }
+          }
+        };
+        const preFrames = Math.floor(preBufferedBytes / FRAME_BYTES);
+        flushFrames();
+        log(`Flushed ${preFrames} pre-buffered frame(s) (${preBufferedBytes} bytes)`);
+
+        // Continue streaming audio from FFmpeg
+        input.on('data', (chunk: Buffer) => {
+          if (!chunk || !chunk.length) return;
+          audioChunks++;
+          totalAudioBytes += chunk.length;
+          audioBuf = Buffer.concat([audioBuf, chunk]);
+          flushFrames();
+        });
+
+        let streamEndHandled = false;
+        const onStreamEnd = () => {
+          if (streamEndHandled) return;
+          streamEndHandled = true;
+          log(`Stream ended: ${audioChunks} chunks, ${totalAudioBytes} bytes total`);
+          // Flush any remaining audio (even if < FRAME_BYTES) — pad to minimum 50ms
+          if (audioBuf.length > 0 && ws.readyState === WS.OPEN) {
+            const toSend = audioBuf.length >= MIN_FRAME ? audioBuf : Buffer.concat([audioBuf, Buffer.alloc(MIN_FRAME - audioBuf.length)]);
+            try { ws.send(toSend); } catch { /* noop */ }
+            audioBuf = Buffer.alloc(0);
+          }
+          handleStreamEnd();
+        };
+        input.on('end', onStreamEnd);
+        input.on('close', onStreamEnd);
+        input.on('error', (err) => safeReject(err));
+      });
+
+      ws.on('message', (raw: Buffer | string) => {
+        let msg: any;
+        try { msg = JSON.parse(raw.toString()); } catch { return; }
+
+        const msgType: string = msg?.type ?? '';
+
+        if (msgType === 'Begin') {
+          log(`Session started (id=${msg?.id}, expires=${msg?.expires_at})`);
+          return;
+        }
+
+        if (msgType === 'SpeechStarted') {
+          log(`Speech detected at ${msg?.timestamp}ms`);
+          return;
+        }
+
+        if (msgType === 'Turn') {
+          const txt: string = (msg?.transcript ?? '').trim();
+          const endOfTurn: boolean = msg?.end_of_turn === true;
+
+          if (txt) {
+            transcript = txt;
+            resetSafety();
+          }
+
+          if (endOfTurn) {
+            log(`EndOfTurn: "${transcript}"`);
+            if (transcript) safeResolve(transcript);
+          } else if (txt && onInterim) {
+            onInterim(transcript);
+          }
+          return;
+        }
+
+        if (msgType === 'Termination') {
+          log('Termination message received');
+          if (!settled) {
+            settled = true;
+            if (safetyTimer) clearTimeout(safetyTimer);
+            pendingResult = { value: transcript };
+          }
+          // Always close WS on Termination (even if already settled by safeResolve)
+          try { ws.close(); } catch { /* noop */ }
+          return;
+        }
+
+        // Log any unknown message types
+        log(`Unknown message type: ${msgType}`);
+      });
+
+      ws.on('close', (code: number, reason: Buffer) => {
+        const reasonStr = reason?.toString() || '';
+        const CLOSE_REASONS: Record<number, string> = {
+          1000: 'Normal closure',
+          1008: 'Authentication failed',
+          1011: 'Server internal error (often: no audio received)',
+          3005: 'Server error',
+          3006: 'Invalid message format',
+          3007: 'Audio chunk violation / sent faster than real-time',
+          3008: 'Session exceeded max duration',
+          3009: 'Concurrency limit exceeded',
+        };
+        const codeLabel = CLOSE_REASONS[code] || 'Unknown';
+        log(`WS closed: code=${code} (${codeLabel}) reason="${reasonStr}" transcript="${transcript}"`);
+        _aaiActiveWs = null;
+        _aaiLastCloseTime = Date.now();
+        if (terminateTimer) { clearTimeout(terminateTimer); terminateTimer = null; }
+        if (safetyTimer) clearTimeout(safetyTimer);
+
+        // Now that the WS is truly closed, settle the promise.
+        // Add a small delay so AssemblyAI's backend fully releases the session slot
+        // before we open a new one (prevents "too many concurrent sessions").
+        const settle = () => {
+          if (pendingResult) {
+            resolve(pendingResult.value);
+          } else if (pendingError) {
+            reject(pendingError);
+          } else if (!settled) {
+            settled = true;
+            if (code === 1008 || (code >= 3000 && code <= 3999)) {
+              reject(new Error(`AssemblyAI closed ${code}: ${codeLabel}${reasonStr ? ' — ' + reasonStr : ''}`));
+            } else {
+              resolve(transcript);
+            }
+          }
+        };
+        // Wait 1500ms after WS close for AssemblyAI to release the session slot
+        setTimeout(settle, 1500);
+      });
+    });
+  }
+
+  /**
+   * Persistent AssemblyAI streaming session that processes multiple turns within
+   * a single WebSocket connection. Yields one transcript string per completed turn.
+   *
+   * This avoids the "too many concurrent sessions" error caused by rapidly
+   * opening/closing WS sessions in a loop.
+   */
+  async *transcribeStreamAssemblyAITurns(
+    input: NodeJS.ReadableStream,
+    onInterim?: (partial: string) => void
+  ): AsyncGenerator<string, void, undefined> {
+    const WS = (await import('ws')).default;
+    const apiKey = this.assemblyaiApiKey || process.env.ASSEMBLYAI_API_KEY || '';
+    if (!apiKey) throw new Error('AssemblyAI API key not set');
+
+    const t0 = Date.now();
+    const log = (msg: string) => console.log(`[Mantra] AAI-persistent +${Date.now() - t0}ms: ${msg}`);
+
+    // Force-close any lingering WS from a previous session
+    if (_aaiActiveWs) {
+      log('Force-closing lingering WS from previous session');
+      try {
+        if (_aaiActiveWs.readyState === 1 /* OPEN */) {
+          _aaiActiveWs.send(JSON.stringify({ type: 'Terminate' }));
+        }
+        _aaiActiveWs.terminate();
+      } catch { /* noop */ }
+      _aaiActiveWs = null;
+      await new Promise(r => setTimeout(r, 1500));
+    }
+
+    // Enforce cooldown between sessions
+    const sinceLast = Date.now() - _aaiLastCloseTime;
+    if (_aaiLastCloseTime > 0 && sinceLast < AAI_SESSION_COOLDOWN_MS) {
+      const wait = AAI_SESSION_COOLDOWN_MS - sinceLast;
+      log(`Cooldown: waiting ${wait}ms before new session`);
+      await new Promise(r => setTimeout(r, wait));
+    }
+
+    const params = new URLSearchParams({
+      speech_model: 'u3-rt-pro',
+      sample_rate: '16000',
+      encoding: 'pcm_s16le',
+      max_turn_silence: '1500',
+    });
+    const keyterms = identifiersFromActiveEditor(100);
+    const url = `wss://streaming.assemblyai.com/v3/ws?${params.toString()}`;
+    log(`Connecting persistent session (${keyterms.length} keyterms, key=${apiKey.slice(0, 8)}...)`);
+
+    // --- Pre-buffer audio from FFmpeg before connecting WS ---
+    const FRAME_BYTES = 3200; // 100ms at 16kHz 16-bit mono
+    const MIN_FRAME = 1600;   // 50ms minimum for AssemblyAI
+    let sharedBuf = Buffer.alloc(0);
+    let audioChunks = 0;
+    let totalAudioBytes = 0;
+    let wsReady = false;
+
+    const bufferListener = (chunk: Buffer) => {
+      if (!chunk || !chunk.length || wsReady) return;
+      audioChunks++;
+      totalAudioBytes += chunk.length;
+      sharedBuf = Buffer.concat([sharedBuf, chunk]);
+    };
+    input.on('data', bufferListener);
+
+    await new Promise<void>((resolveWait, rejectWait) => {
+      const timeout = setTimeout(() => {
+        rejectWait(new Error('Timed out waiting for audio from FFmpeg (5s)'));
+      }, 5000);
+      const check = () => {
+        if (sharedBuf.length >= FRAME_BYTES) {
+          clearInterval(poll);
+          clearTimeout(timeout);
+          log(`Audio flowing: ${sharedBuf.length} bytes pre-buffered in ${audioChunks} chunks`);
+          resolveWait();
+        }
+      };
+      const poll = setInterval(check, 20);
+      check();
+      const onEnd = () => { clearInterval(poll); clearTimeout(timeout); rejectWait(new Error('Audio stream ended before any data arrived')); };
+      input.once('end', onEnd);
+      input.once('close', onEnd);
+      input.once('error', (e) => { clearInterval(poll); clearTimeout(timeout); rejectWait(e); });
+    });
+
+    log('Audio confirmed, connecting persistent WebSocket...');
+
+    // --- Turn queue for async generator ---
+    const turnQueue: string[] = [];
+    let turnNotify: (() => void) | null = null;
+    let wsError: Error | null = null;
+    let wsClosed = false;
+
+    const NOISE_WORDS = new Set([
+      'the', 'a', 'an', 'and', 'uh', 'um', 'oh', 'ah', 'hmm', 'huh',
+      'it', 'is', 'i', 'so', 'but', 'or', 'if', 'of', 'in', 'on',
+      'one', 'two', 'three', 'four', 'five', 'six', 'seven', 'eight',
+      'nine', 'ten', 'to', 'too', 'for', 'ate', 'won',
+      'hey', 'hi', 'bye', 'hm', 'mm',
+    ]);
+    const isNoiseWord = (txt: string): boolean => {
+      if (!txt || !txt.trim()) return true;
+      const clean = txt.trim().replace(/[^a-zA-Z0-9\s]/g, '').trim().toLowerCase();
+      if (!clean) return true;
+      const words = clean.split(/\s+/);
+      if (words.length === 1 && NOISE_WORDS.has(words[0])) return true;
+      if (words.length === 2 && NOISE_WORDS.has(words[0]) && NOISE_WORDS.has(words[1])) return true;
+      return false;
+    };
+
+    const ws = new WS(url, { headers: { Authorization: apiKey } });
+    _aaiActiveWs = ws;
+
+    let terminateTimer: NodeJS.Timeout | null = null;
+    const scheduleTerminate = () => {
+      if (!terminateTimer) {
+        terminateTimer = setTimeout(() => {
+          log('Backstop: ws.terminate() — graceful close timed out');
+          try { (ws as any).terminate(); } catch { /* noop */ }
+        }, 3000);
+      }
+    };
+
+    // --- WS event handlers ---
+    ws.on('unexpected-response', (_req: any, res: any) => {
+      let body = '';
+      res.on('data', (chunk: Buffer) => { body += chunk.toString(); });
+      res.on('end', () => {
+        log(`HTTP REJECTION: ${res.statusCode} — ${body}`);
+        wsError = new Error(`AssemblyAI returned ${res.statusCode}: ${body}`);
+        wsClosed = true;
+        turnNotify?.();
+      });
+    });
+
+    ws.on('error', (e: any) => {
+      log(`WS ERROR: ${e?.message || e}`);
+      wsError = e instanceof Error ? e : new Error(String(e));
+      turnNotify?.();
+    });
+
+    ws.on('open', () => {
+      log('Persistent WebSocket connected');
+
+      // Send keyterms via UpdateConfiguration
+      if (keyterms.length > 0) {
+        try {
+          ws.send(JSON.stringify({ type: 'UpdateConfiguration', keyterms_prompt: keyterms }));
+          log(`Sent ${keyterms.length} keyterms`);
+        } catch { /* noop */ }
+      }
+
+      // Take over from pre-buffer
+      wsReady = true;
+      input.removeListener('data', bufferListener);
+      let audioBuf = sharedBuf;
+      const preBufferedBytes = audioBuf.length;
+      sharedBuf = Buffer.alloc(0);
+
+      const flushFrames = () => {
+        while (audioBuf.length >= FRAME_BYTES && ws.readyState === WS.OPEN) {
+          const frame = audioBuf.subarray(0, FRAME_BYTES);
+          audioBuf = audioBuf.subarray(FRAME_BYTES);
+          try { ws.send(frame); } catch { /* ignore backpressure */ }
+        }
+      };
+      flushFrames();
+      log(`Flushed ${Math.floor(preBufferedBytes / FRAME_BYTES)} pre-buffered frame(s)`);
+
+      // Continue streaming audio
+      input.on('data', (chunk: Buffer) => {
+        if (!chunk || !chunk.length) return;
+        audioChunks++;
+        totalAudioBytes += chunk.length;
+        audioBuf = Buffer.concat([audioBuf, chunk]);
+        flushFrames();
+      });
+
+      let streamEndHandled = false;
+      const onStreamEnd = () => {
+        if (streamEndHandled) return;
+        streamEndHandled = true;
+        log(`Stream ended: ${audioChunks} chunks, ${totalAudioBytes} bytes total`);
+        // Flush remaining audio
+        if (audioBuf.length > 0 && ws.readyState === WS.OPEN) {
+          const toSend = audioBuf.length >= MIN_FRAME ? audioBuf : Buffer.concat([audioBuf, Buffer.alloc(MIN_FRAME - audioBuf.length)]);
+          try { ws.send(toSend); } catch { /* noop */ }
+          audioBuf = Buffer.alloc(0);
+        }
+        // ForceEndpoint + Terminate to flush last turn and end session
+        try { if (ws.readyState === WS.OPEN) ws.send(JSON.stringify({ type: 'ForceEndpoint' })); } catch { /* noop */ }
+        setTimeout(() => {
+          try {
+            if (ws.readyState === WS.OPEN) {
+              ws.send(JSON.stringify({ type: 'Terminate' }));
+            }
+          } catch { /* noop */ }
+        }, 500);
+      };
+      input.on('end', onStreamEnd);
+      input.on('close', onStreamEnd);
+      input.on('error', (err) => {
+        wsError = err instanceof Error ? err : new Error(String(err));
+        turnNotify?.();
+      });
+    });
+
+    let transcript = '';
+    ws.on('message', (raw: Buffer | string) => {
+      let msg: any;
+      try { msg = JSON.parse(raw.toString()); } catch { return; }
+      const msgType: string = msg?.type ?? '';
+
+      if (msgType === 'Begin') {
+        log(`Session started (id=${msg?.id}, expires=${msg?.expires_at})`);
+        return;
+      }
+      if (msgType === 'SpeechStarted') {
+        log(`Speech detected at ${msg?.timestamp}ms`);
+        return;
+      }
+      if (msgType === 'Turn') {
+        const txt: string = (msg?.transcript ?? '').trim();
+        const endOfTurn: boolean = msg?.end_of_turn === true;
+        if (txt) transcript = txt;
+
+        if (endOfTurn) {
+          log(`EndOfTurn: "${transcript}"`);
+          if (transcript && !isNoiseWord(transcript)) {
+            turnQueue.push(transcript);
+            turnNotify?.();
+          } else if (transcript) {
+            log(`Ignoring noise: "${transcript}"`);
+          }
+          transcript = ''; // reset for next turn
+        } else if (txt && onInterim) {
+          onInterim(transcript);
+        }
+        return;
+      }
+      if (msgType === 'Termination') {
+        log('Termination message received');
+        wsClosed = true;
+        turnNotify?.();
+        return;
+      }
+      log(`Unknown message type: ${msgType}`);
+    });
+
+    ws.on('close', (code: number, reason: Buffer) => {
+      const reasonStr = reason?.toString() || '';
+      const CLOSE_REASONS: Record<number, string> = {
+        1000: 'Normal closure',
+        1008: 'Authentication failed',
+        1011: 'Server internal error',
+        3005: 'Server error',
+        3006: 'Invalid message format',
+        3007: 'Audio chunk violation',
+        3008: 'Session exceeded max duration',
+        3009: 'Concurrency limit exceeded',
+      };
+      const codeLabel = CLOSE_REASONS[code] || 'Unknown';
+      log(`WS closed: code=${code} (${codeLabel}) reason="${reasonStr}"`);
+      _aaiActiveWs = null;
+      _aaiLastCloseTime = Date.now();
+      if (terminateTimer) { clearTimeout(terminateTimer); terminateTimer = null; }
+      wsClosed = true;
+      if (code === 1008 || (code >= 3000 && code <= 3999)) {
+        wsError = wsError || new Error(`AssemblyAI closed ${code}: ${codeLabel}${reasonStr ? ' — ' + reasonStr : ''}`);
+      }
+      turnNotify?.();
+    });
+
+    // --- Async generator loop: yield completed turns ---
+    try {
+      while (true) {
+        while (turnQueue.length > 0) {
+          yield turnQueue.shift()!;
+        }
+        if (wsError) throw wsError;
+        if (wsClosed) return;
+        await new Promise<void>(r => { turnNotify = r; });
+        turnNotify = null;
+      }
+    } finally {
+      // Clean up the WS session
+      log('Generator cleanup — closing WS');
+      _aaiActiveWs = null;
+      try {
+        if (ws.readyState === WS.OPEN) {
+          ws.send(JSON.stringify({ type: 'Terminate' }));
+        }
+      } catch { /* noop */ }
+      setTimeout(() => {
+        try { ws.close(); scheduleTerminate(); } catch { /* noop */ }
+      }, 500);
+    }
+  }
+
+  /**
    * Selection model: determines the scope (line range) for an utterance.
    * Returns 'select' (user wants to highlight code), 'range' (modify a region),
    * or 'full' (whole-file modification or non-modification).
@@ -983,7 +1588,7 @@ export class Model {
     const cfg = vscode.workspace.getConfiguration('mantra');
     const selectionPrompt = (cfg.get<string>('selectionPrompt') ?? '').trim();
 
-    const selModel = this.provider === 'groq' ? GROQ_MODEL_DEFAULT : CEREBRAS_MODEL;
+    const selModel = this.getModel();
 
     try {
       const raw = await this.chatText({
@@ -1019,7 +1624,7 @@ export class Model {
       filename?: string;
       editor?: vscode.TextEditor;
       terminalHistory?: string;
-      agentBackend?: 'claude' | 'codex' | 'none';
+      agentBackend?: 'claude' | 'none';
       activityLog?: string;
       workspaceFiles?: string;
     }
@@ -1084,10 +1689,10 @@ export class Model {
     const configuredPrompt = (cfg.get<string>('prompt') ?? '').trim();
     const systemBase = configuredPrompt;
 
-    const agentName = ctx.agentBackend === 'claude' ? 'Claude Code' : ctx.agentBackend === 'codex' ? 'Codex' : null;
+    const agentName = ctx.agentBackend === 'claude' ? 'Claude Code' : null;
     const agentNote = agentName
       ? `\nIMPORTANT — An AI agent (${agentName}) is active. Prefer "agent" over "modification" for anything non-trivial. Use "modification" ONLY for small, targeted single-file edits (rename a variable, change a loop type, add a single line, remove a comment, etc.). For anything that requires thought, planning, multi-step work, new features, refactoring, or is even slightly complex, use "agent". When ambiguous, default to "agent". NEVER use "question" to answer something the agent could handle — "question" is ONLY for quick factual answers when no agent is available or the user explicitly asks a brief knowledge question like "what does this line do?".`
-      : `\nIMPORTANT: No AI agent is active. The "agent" type is NOT available — NEVER output "agent", "claude", or "codex". Only "question", "command", "modification", and "terminal" are valid output types. For complex coding tasks that would normally go to an agent, use "modification" instead (output the full modified file). For knowledge/explanation questions, use "question" and provide a helpful answer.`;
+      : `\nIMPORTANT: No AI agent is active. The "agent" type is NOT available — NEVER output "agent" or "claude". Only "question", "command", "modification", and "terminal" are valid output types. For complex coding tasks that would normally go to an agent, use "modification" instead (output the full modified file). For knowledge/explanation questions, use "question" and provide a helpful answer.`;
 
     const system = [
       systemBase,
@@ -1209,7 +1814,7 @@ export class Model {
 
     const user = parts.join('\n');
 
-    const activeModel = this.provider === 'groq' ? GROQ_MODEL_DEFAULT : CEREBRAS_MODEL;
+    const activeModel = this.getModel();
     console.log('LLM prompt ready.')
     const raw = await this.chatText({
       model: activeModel,
@@ -1251,7 +1856,7 @@ export class Model {
    */
   async updateMemory(utterance: string, result: RouteResult, terminalHistory?: string): Promise<void> {
     try {
-      const activeModel = this.provider === 'groq' ? GROQ_MODEL_DEFAULT : CEREBRAS_MODEL;
+      const activeModel = this.getModel();
       const raw = await this.chatText({
         model: activeModel,
         temperature: 0,
