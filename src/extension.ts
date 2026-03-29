@@ -1653,11 +1653,12 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 
           if (!(await warnSensitiveFileAndMaybeProceed())) return;
 
-          // --- selection model: determine scope before main routing ---
-          // If user already has text selected, skip the selection model and
-          // go straight to decide() which will activate SELECTION MODE.
-          let scopeHighlight: vscode.TextEditorDecorationType | null = null;
-          let scopeRange: { start: number; end: number } | null = null;
+          // --- selection model: handle pure selection commands ---
+          // Code edits (modification) only happen when the user has MANUALLY
+          // selected text. The selection model still runs for pure selection
+          // commands (e.g. "select this function") but no longer auto-selects
+          // ranges for scoped modification.
+          const hasPreExistingSelection = !!(editor && !editor.selection.isEmpty);
           if (editor && editor.selection.isEmpty) {
             try {
               const scope = await model!.selectRange(transcript, {
@@ -1676,31 +1677,16 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
                 pushLog('command', `Selected lines ${scope.startLine}–${scope.endLine}`);
                 return;
               }
-
-              if (scope.action === 'range' && scope.startLine && scope.endLine) {
-                // Scoped modification — set selection and show gray highlight
-                scopeRange = { start: scope.startLine, end: scope.endLine };
-                const startPos = new vscode.Position(scope.startLine - 1, 0);
-                const endLine = Math.min(scope.endLine - 1, editor.document.lineCount - 1);
-                const endPos = new vscode.Position(endLine, editor.document.lineAt(endLine).text.length);
-                editor.selection = new vscode.Selection(startPos, endPos);
-
-                // Show subtle gray highlight while the main model runs
-                scopeHighlight = vscode.window.createTextEditorDecorationType({
-                  isWholeLine: true,
-                  backgroundColor: 'rgba(128, 128, 128, 0.12)',
-                });
-                editor.setDecorations(scopeHighlight, [{
-                  range: new vscode.Range(startPos, endPos),
-                }]);
-                console.log('[Mantra] Scoped range: lines %d–%d', scope.startLine, scope.endLine);
+              // 'range' and 'full' both proceed to decide() without setting selection.
+              // Modification is only available when the user has manually selected text.
+              if (scope.action === 'range') {
+                console.log('[Mantra] Selection model returned range — ignoring (no pre-existing selection, modification disabled)');
               }
-              // scope.action === 'full' → no selection, proceed normally
             } catch (err) {
-              console.warn('[Mantra] Selection model error (proceeding with full):', err);
+              console.warn('[Mantra] Selection model error (proceeding):', err);
             }
-          } else if (editor && !editor.selection.isEmpty) {
-            console.log('[Mantra] Pre-existing selection detected — skipping selection model, using SELECTION MODE');
+          } else if (hasPreExistingSelection) {
+            console.log('[Mantra] Pre-existing selection detected — SELECTION MODE will be active');
           }
 
           const commandsList = canonicalCommandPhrases();
@@ -1720,6 +1706,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
               agentBackend: isQuickQ ? 'none' : getSelectedAgent(),
               activityLog: getActivityLogText() || undefined,
               workspaceFiles: wsFiles || undefined,
+              hasPreExistingSelection,
             });
           } catch (err: any) {
             const status = (err && (err.status || err.code)) ?? 0;
@@ -1736,13 +1723,6 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
             vscode.window.showErrorMessage(msg);
             pushLog('error', msg);
             return;
-          } finally {
-            // Clear scope highlight once main model finishes
-            if (scopeHighlight) {
-              try { editor?.setDecorations(scopeHighlight, []); } catch {}
-              scopeHighlight.dispose();
-              scopeHighlight = null;
-            }
           }
 
           // "Quick question" override — always force to question type so it's
@@ -1756,6 +1736,19 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
           // but if it slips through, convert it to a question.
           if (getSelectedAgent() === 'none' && (result.type === 'agent' || result.type === 'claude')) {
             result = { ...result, type: 'question' as any };
+          }
+
+          // No-selection override — modification requires a pre-existing manual selection.
+          // If the LLM returns "modification" without one, reroute to agent or question.
+          if (result.type === 'modification' && !hasPreExistingSelection) {
+            const agent = getSelectedAgent();
+            if (agent !== 'none') {
+              console.log('[Mantra] No pre-existing selection — converting modification to agent');
+              result = { ...result, type: 'agent' as any };
+            } else {
+              console.log('[Mantra] No pre-existing selection, no agent — converting modification to question');
+              result = { ...result, type: 'question' as any };
+            }
           }
 
           if (result.type === 'terminal') {
@@ -1829,9 +1822,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
               const diffId = storeDiff(originalText, rawPayload, filename, fullDocBefore, fullDocAfter);
               const newPayloadLines = rawPayload.split('\n').length;
               const newEndLine = startLine + newPayloadLines;
-              const rangeLabel = scopeRange
-                ? `lines ${scopeRange.start}–${scopeRange.end} → ${scopeRange.start}–${newEndLine}`
-                : `lines ${startLine + 1}–${endLine + 1} → ${startLine + 1}–${newEndLine}`;
+              const rangeLabel = `lines ${startLine + 1}–${endLine + 1} → ${startLine + 1}–${newEndLine}`;
               pushLog('modification', `Modified ${filename} (${rangeLabel})`, diff || undefined, diffId);
               // Immediately mark the new diff as undoable, then recheck all after a delay
               sidebar?.postState({ undoableDiffIds: [diffId] });
@@ -2399,6 +2390,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         const termHistory = getFullTerminalHistory();
         const wsFiles = await getWorkspaceFiles();
 
+        const hasPreExistingSelectionPtt = !!(editor && !editor.selection.isEmpty);
         const isQuickQ = /\bquick\s+question\b/i.test(transcript);
         let result = await model!.decide(transcript, {
           editorContext, commands: commandsList, filename: editor?.document.fileName, editor: editor ?? undefined,
@@ -2406,6 +2398,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
           agentBackend: isQuickQ ? 'none' : getSelectedAgent(),
           activityLog: getActivityLogText() || undefined,
           workspaceFiles: wsFiles || undefined,
+          hasPreExistingSelection: hasPreExistingSelectionPtt,
         });
 
         if (!result) return;
@@ -2418,6 +2411,16 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         // No-agent override — force agent-type results to question (same as main loop)
         if (getSelectedAgent() === 'none' && (result.type === 'agent' || result.type === 'claude')) {
           result = { ...result, type: 'question' as any };
+        }
+
+        // No-selection override — modification requires manual selection (same as main loop)
+        if (result.type === 'modification' && !hasPreExistingSelectionPtt) {
+          const agent = getSelectedAgent();
+          if (agent !== 'none') {
+            result = { ...result, type: 'agent' as any };
+          } else {
+            result = { ...result, type: 'question' as any };
+          }
         }
 
         // Apply result (same logic as main loop — each handler does its own logging)

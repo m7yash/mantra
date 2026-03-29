@@ -364,21 +364,32 @@ function buildSelectionUserMessage(utterance, cursorLine, file) {
   ].join('\n');
 }
 
-function buildRouterUserMessage(utterance, file, cursorLine) {
-  const lineText = file.content.split('\n')[cursorLine - 1] || '';
+/**
+ * Build the user message for the router LLM call.
+ * @param {string} utterance
+ * @param {object} file - { filename, language, content }
+ * @param {number} cursorLine
+ * @param {{ startLine: number, endLine: number }} [selection] - optional pre-existing selection
+ */
+function buildRouterUserMessage(utterance, file, cursorLine, selection) {
+  const lines = file.content.split('\n');
+  const lineText = lines[cursorLine - 1] || '';
+  const selectionText = selection
+    ? lines.slice(selection.startLine - 1, selection.endLine).join('\n')
+    : '';
   const parts = [
     'User utterance:',
     utterance,
     '',
     'Editor context:',
     `Active file language: ${file.language}`,
-    `Total lines: ${file.content.split('\n').length}`,
+    `Total lines: ${lines.length}`,
     `Filename: ${file.filename}`,
     '',
     'Cursor summary:',
     `- line: ${cursorLine}, column: 1`,
     `- line text: ${lineText}`,
-    '- selection: (none)',
+    `- selection: ${selectionText || '(none)'}`,
     '',
     '(no enclosing symbol)',
     '',
@@ -387,7 +398,85 @@ function buildRouterUserMessage(utterance, file, cursorLine) {
     file.content,
     '```',
   ];
+
+  // Append SELECTION MODE block when the user has text selected
+  if (selection) {
+    const startLine = selection.startLine;
+    const endLine = selection.endLine;
+    const selectedText = lines.slice(startLine - 1, endLine).join('\n');
+    const selLines = selectedText.split('\n');
+    let baseIndent = '';
+    let minLen = Infinity;
+    for (const line of selLines) {
+      if (line.trim() === '') continue;
+      const indent = (line.match(/^(\s*)/) ?? ['', ''])[1];
+      if (indent.length < minLen) { minLen = indent.length; baseIndent = indent; }
+    }
+    const ctxBefore = startLine > 1
+      ? lines.slice(Math.max(0, startLine - 4), startLine - 1).join('\n')
+      : '(start of file)';
+    const ctxAfter = endLine < lines.length
+      ? lines.slice(endLine, Math.min(lines.length, endLine + 3)).join('\n')
+      : '(end of file)';
+    const indentDesc = baseIndent.length === 0 ? 'no indentation'
+      : baseIndent.includes('\t') ? `${baseIndent.length} tab(s)`
+      : `${baseIndent.length} spaces`;
+
+    parts.push('');
+    parts.push('\u26a0\ufe0f SELECTION MODE \u26a0\ufe0f');
+    parts.push(`The user has lines ${startLine}–${endLine} selected. For a modification, output ONLY the replacement for the selected text — do NOT output the entire file. The full file above is for context only.`);
+    parts.push('');
+    parts.push(`Selected text (lines ${startLine}–${endLine}, to be replaced):`);
+    parts.push('```');
+    parts.push(selectedText);
+    parts.push('```');
+    parts.push('');
+    parts.push('Context before selection:');
+    parts.push('```');
+    parts.push(ctxBefore);
+    parts.push('```');
+    parts.push('');
+    parts.push('Context after selection:');
+    parts.push('```');
+    parts.push(ctxAfter);
+    parts.push('```');
+    parts.push('');
+    parts.push(`CRITICAL OUTPUT FORMAT FOR SELECTION MODE:`);
+    parts.push(`Your response MUST look exactly like this (the code goes on the NEXT line after the label):`);
+    parts.push(`modification`);
+    parts.push(`<replacement code with exact indentation>`);
+    parts.push(``);
+    parts.push(`CRITICAL INDENTATION RULES:`);
+    parts.push(`1. The selected text uses ${indentDesc} as its base indentation ("${baseIndent}").`);
+    parts.push(`2. Every line of your replacement MUST start with EXACTLY the same whitespace as the corresponding original line.`);
+    parts.push(`3. Do NOT strip or reduce indentation. Do NOT add extra indentation. Copy the whitespace character-for-character.`);
+    parts.push(`4. The FIRST line of your output must start with "${baseIndent}" — not at column 0.`);
+  }
+
   return parts.join('\n');
+}
+
+const COMMAND_LIST = 'save, save file, save all, new file, close file, close tab, close all, undo, redo, cut, copy, paste, select all, format document, rename symbol, find, replace, next tab, previous tab, go to definition, go to references, toggle terminal, focus terminal, new terminal, toggle sidebar, toggle panel, zoom in, zoom out, show command palette, quick open, toggle breakpoint, start debugging, stop debugging, next error, previous error, show hover, go to symbol, stage file, commit, push, pull';
+
+/**
+ * Build the system prompt for router tests matching the 4-way agentNote matrix.
+ * @param {{ hasAgent: boolean, hasSelection: boolean }} opts
+ */
+function buildRouterSystemPrompt({ hasAgent = true, hasSelection = false } = {}) {
+  let agentNote;
+  if (hasAgent && hasSelection) {
+    agentNote = '\nIMPORTANT — An AI agent (Claude Code) is active and the user has text selected. Prefer "agent" over "modification" for anything non-trivial. Use "modification" ONLY for small, targeted edits on the selected text (rename a variable, change a loop type, add a single line, remove a comment, etc.). For anything that requires thought, planning, multi-step work, new features, refactoring, or is even slightly complex, use "agent". When ambiguous, default to "agent". NEVER use "question" to answer something the agent could handle — "question" is ONLY for quick factual answers when no agent is available or the user explicitly asks a brief knowledge question like "what does this line do?".';
+  } else if (hasAgent && !hasSelection) {
+    agentNote = '\nIMPORTANT — An AI agent (Claude Code) is active. The user has NO text selected in the editor, so the "modification" type is NOT available — NEVER output "modification". Only "command", "terminal", "agent", and "question" are valid output types. For ANY code editing request (rename a variable, change a loop, add a line, etc.), use "agent" — the agent will handle it. When ambiguous, default to "agent". NEVER use "question" to answer something the agent could handle — "question" is ONLY for quick factual answers when the user explicitly asks a brief knowledge question like "what does this line do?".';
+  } else if (!hasAgent && hasSelection) {
+    agentNote = '\nIMPORTANT: No AI agent is active. The "agent" type is NOT available — NEVER output "agent" or "claude". The user has text selected, so "modification" is available for code edits on the selected text. Only "question", "command", "modification", and "terminal" are valid output types. For knowledge/explanation questions, use "question" and provide a helpful answer.';
+  } else {
+    agentNote = '\nIMPORTANT: No AI agent is active and the user has NO text selected. The "agent" type is NOT available — NEVER output "agent" or "claude". The "modification" type is also NOT available — NEVER output "modification" (no text is selected to edit). Only "question", "command", and "terminal" are valid output types. For code editing requests, use "question" and explain the changes the user should make. For knowledge/explanation questions, use "question" and provide a helpful answer.';
+  }
+
+  return ROUTER_PROMPT + agentNote
+    + '\n\nCanonical command catalog (authoritative; choose ONLY from these when outputting type=command):\n'
+    + COMMAND_LIST;
 }
 
 // ── Test cases ───────────────────────────────────────────────────────────────
@@ -737,16 +826,46 @@ const gotoTests = [
 ];
 
 // -- Router tests --
+// Each test can specify hasAgent (default true) and hasSelection (default false).
+// When hasSelection is set, a selection range is provided.
 
 const routerTests = [
+  // --- No selection, agent active (default) ---
   { name: 'save-file', utterance: 'save the file', file: SAMPLE_FILES.jsModule, cursorLine: 10, expectedType: 'command' },
   { name: 'run-python', utterance: 'run this file', file: SAMPLE_FILES.pythonClass, cursorLine: 10, expectedType: 'terminal' },
-  { name: 'rename-variable', utterance: 'rename this variable to count', file: SAMPLE_FILES.jsModule, cursorLine: 10, expectedType: 'command|modification' },
+  { name: 'rename-variable-no-sel', utterance: 'rename this variable to count', file: SAMPLE_FILES.jsModule, cursorLine: 10, expectedType: 'command|agent' },
   { name: 'quick-question', utterance: 'quick question what does this function do', file: SAMPLE_FILES.pythonClass, cursorLine: 20, expectedType: 'question' },
   { name: 'git-status', utterance: 'check git status', file: SAMPLE_FILES.jsModule, cursorLine: 1, expectedType: 'terminal' },
   { name: 'undo', utterance: 'undo that', file: SAMPLE_FILES.jsModule, cursorLine: 10, expectedType: 'command' },
-  { name: 'change-port', utterance: 'change the port to 8080', file: SAMPLE_FILES.jsModule, cursorLine: 54, expectedType: 'modification|agent' },
+  { name: 'change-port-no-sel', utterance: 'change the port to 8080', file: SAMPLE_FILES.jsModule, cursorLine: 54, expectedType: 'agent' },
   { name: 'close-tab', utterance: 'close this tab', file: SAMPLE_FILES.jsModule, cursorLine: 1, expectedType: 'command' },
+  { name: 'while-loop-no-sel', utterance: 'change this to a while loop', file: SAMPLE_FILES.pythonIfElse, cursorLine: 42, expectedType: 'agent' },
+  { name: 'add-print-no-sel', utterance: 'add a print statement here', file: SAMPLE_FILES.jsModule, cursorLine: 26, expectedType: 'agent' },
+  { name: 'make-async-no-sel', utterance: 'make this function async', file: SAMPLE_FILES.jsModule, cursorLine: 26, expectedType: 'agent' },
+  { name: 'add-docstring-no-sel', utterance: 'add a docstring to this function', file: SAMPLE_FILES.pythonClass, cursorLine: 21, expectedType: 'agent' },
+  { name: 'what-does-this-do', utterance: 'what does this function do', file: SAMPLE_FILES.pythonClass, cursorLine: 20, expectedType: 'agent|question' },
+
+  // --- With selection, agent active ---
+  { name: 'change-port-with-sel', utterance: 'change the port to 8080', file: SAMPLE_FILES.jsModule, cursorLine: 54,
+    hasSelection: true, selection: { startLine: 54, endLine: 56 }, expectedType: 'modification' },
+  { name: 'while-loop-with-sel', utterance: 'change this to a while loop', file: SAMPLE_FILES.pythonIfElse, cursorLine: 42,
+    hasSelection: true, selection: { startLine: 39, endLine: 44 }, expectedType: 'modification' },
+  { name: 'rename-var-with-sel', utterance: 'rename this variable to count', file: SAMPLE_FILES.jsModule, cursorLine: 10,
+    hasSelection: true, selection: { startLine: 8, endLine: 19 }, expectedType: 'modification' },
+  { name: 'add-docstring-with-sel', utterance: 'add a docstring to this function', file: SAMPLE_FILES.pythonClass, cursorLine: 21,
+    hasSelection: true, selection: { startLine: 16, endLine: 23 }, expectedType: 'modification' },
+
+  // --- No selection, no agent ---
+  { name: 'change-port-no-agent', utterance: 'change the port to 8080', file: SAMPLE_FILES.jsModule, cursorLine: 54,
+    hasAgent: false, expectedType: 'question' },
+  { name: 'while-loop-no-agent', utterance: 'change this to a while loop', file: SAMPLE_FILES.pythonIfElse, cursorLine: 42,
+    hasAgent: false, expectedType: 'question' },
+  { name: 'run-file-no-agent', utterance: 'run this file', file: SAMPLE_FILES.pythonClass, cursorLine: 10,
+    hasAgent: false, expectedType: 'terminal' },
+
+  // --- With selection, no agent ---
+  { name: 'change-port-sel-no-agent', utterance: 'change the port to 8080', file: SAMPLE_FILES.jsModule, cursorLine: 54,
+    hasAgent: false, hasSelection: true, selection: { startLine: 54, endLine: 56 }, expectedType: 'modification' },
 ];
 
 // ── Test runner ──────────────────────────────────────────────────────────────
@@ -830,16 +949,12 @@ async function runRouterTests() {
   console.log(`\n${CYAN}--- Router Tests (${routerTests.length}) ---${RESET}\n`);
   let passed = 0, failed = 0, errors = 0;
 
-  // Simplified system prompt with agent note and command list
-  const commandList = 'save, save file, save all, new file, close file, close tab, close all, undo, redo, cut, copy, paste, select all, format document, rename symbol, find, replace, next tab, previous tab, go to definition, go to references, toggle terminal, focus terminal, new terminal, toggle sidebar, toggle panel, zoom in, zoom out, show command palette, quick open, toggle breakpoint, start debugging, stop debugging, next error, previous error, show hover, go to symbol, stage file, commit, push, pull';
-  const system = ROUTER_PROMPT
-    + '\nIMPORTANT — An AI agent (Claude Code) is active. Prefer "agent" over "modification" for anything non-trivial.'
-    + '\n\nCanonical command catalog (authoritative; choose ONLY from these when outputting type=command):\n'
-    + commandList;
-
   for (const test of routerTests) {
     try {
-      const user = buildRouterUserMessage(test.utterance, test.file, test.cursorLine);
+      const hasAgent = test.hasAgent !== false; // default true
+      const hasSelection = !!test.hasSelection;
+      const system = buildRouterSystemPrompt({ hasAgent, hasSelection });
+      const user = buildRouterUserMessage(test.utterance, test.file, test.cursorLine, test.selection);
       const raw = await chatText([
         { role: 'system', content: system },
         { role: 'user', content: user },
@@ -848,11 +963,13 @@ async function runRouterTests() {
       const firstWord = raw.trim().split(/\s/)[0].toLowerCase();
       const validTypes = test.expectedType.split('|');
       const match = validTypes.includes(firstWord);
+      const selLabel = hasSelection ? '+sel' : '-sel';
+      const agentLabel = hasAgent ? '+agent' : '-agent';
       if (match) {
-        console.log(`  ${GREEN}PASS${RESET}  ${test.name}: ${DIM}${firstWord}${RESET}`);
+        console.log(`  ${GREEN}PASS${RESET}  ${test.name} [${selLabel},${agentLabel}]: ${DIM}${firstWord}${RESET}`);
         passed++;
       } else {
-        console.log(`  ${RED}FAIL${RESET}  ${test.name}: expected "${test.expectedType}", got "${firstWord}"`);
+        console.log(`  ${RED}FAIL${RESET}  ${test.name} [${selLabel},${agentLabel}]: expected "${test.expectedType}", got "${firstWord}"`);
         console.log(`        ${DIM}Raw: ${raw.slice(0, 80)}${RESET}`);
         failed++;
       }

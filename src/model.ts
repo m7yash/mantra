@@ -1673,6 +1673,7 @@ export class Model {
       agentBackend?: 'claude' | 'none';
       activityLog?: string;
       workspaceFiles?: string;
+      hasPreExistingSelection?: boolean;
     }
   ): Promise<RouteResult> {
     console.log('Entering decide function')
@@ -1736,9 +1737,21 @@ export class Model {
     const systemBase = configuredPrompt;
 
     const agentName = ctx.agentBackend === 'claude' ? 'Claude Code' : null;
-    const agentNote = agentName
-      ? `\nIMPORTANT — An AI agent (${agentName}) is active. Prefer "agent" over "modification" for anything non-trivial. Use "modification" ONLY for small, targeted single-file edits (rename a variable, change a loop type, add a single line, remove a comment, etc.). For anything that requires thought, planning, multi-step work, new features, refactoring, or is even slightly complex, use "agent". When ambiguous, default to "agent". NEVER use "question" to answer something the agent could handle — "question" is ONLY for quick factual answers when no agent is available or the user explicitly asks a brief knowledge question like "what does this line do?".`
-      : `\nIMPORTANT: No AI agent is active. The "agent" type is NOT available — NEVER output "agent" or "claude". Only "question", "command", "modification", and "terminal" are valid output types. For complex coding tasks that would normally go to an agent, use "modification" instead (output the full modified file). For knowledge/explanation questions, use "question" and provide a helpful answer.`;
+    const hasSel = !!ctx.hasPreExistingSelection;
+    let agentNote: string;
+    if (agentName && hasSel) {
+      // Agent active + user has text selected → modification available for small edits
+      agentNote = `\nIMPORTANT — An AI agent (${agentName}) is active and the user has text selected. Prefer "agent" over "modification" for anything non-trivial. Use "modification" ONLY for small, targeted edits on the selected text (rename a variable, change a loop type, add a single line, remove a comment, etc.). For anything that requires thought, planning, multi-step work, new features, refactoring, or is even slightly complex, use "agent". When ambiguous, default to "agent". NEVER use "question" to answer something the agent could handle — "question" is ONLY for quick factual answers when no agent is available or the user explicitly asks a brief knowledge question like "what does this line do?".`;
+    } else if (agentName && !hasSel) {
+      // Agent active + no selection → modification NOT available
+      agentNote = `\nIMPORTANT — An AI agent (${agentName}) is active. The user has NO text selected in the editor, so the "modification" type is NOT available — NEVER output "modification". Only "command", "terminal", "agent", and "question" are valid output types. For ANY code editing request (rename a variable, change a loop, add a line, etc.), use "agent" — the agent will handle it. When ambiguous, default to "agent". NEVER use "question" to answer something the agent could handle — "question" is ONLY for quick factual answers when the user explicitly asks a brief knowledge question like "what does this line do?".`;
+    } else if (!agentName && hasSel) {
+      // No agent + user has text selected → modification available
+      agentNote = `\nIMPORTANT: No AI agent is active. The "agent" type is NOT available — NEVER output "agent" or "claude". The user has text selected, so "modification" is available for code edits on the selected text. Only "question", "command", "modification", and "terminal" are valid output types. For knowledge/explanation questions, use "question" and provide a helpful answer.`;
+    } else {
+      // No agent + no selection → neither modification nor agent available
+      agentNote = `\nIMPORTANT: No AI agent is active and the user has NO text selected. The "agent" type is NOT available — NEVER output "agent" or "claude". The "modification" type is also NOT available — NEVER output "modification" (no text is selected to edit). Only "question", "command", and "terminal" are valid output types. For code editing requests, use "question" and explain the changes the user should make. For knowledge/explanation questions, use "question" and provide a helpful answer.`;
+    }
 
     const system = [
       systemBase,
@@ -1782,9 +1795,9 @@ export class Model {
 
     parts.push(fullFileStr);
 
-    // --- Selection mode: if user has text selected, instruct LLM to output only the replacement ---
+    // --- Selection mode: if user has text manually selected, instruct LLM to output only the replacement ---
     let isSelectionMode = false;
-    if (ctx.editor && !ctx.editor.selection.isEmpty) {
+    if (ctx.editor && !ctx.editor.selection.isEmpty && ctx.hasPreExistingSelection) {
       const sel = ctx.editor.selection;
       const doc = ctx.editor.document;
       // Expand to full lines

@@ -20,11 +20,11 @@ Discord: https://discord.gg/fmWCScWuUn
 1. **Speech-to-text:** Audio is streamed to **Deepgram Flux** (conversational STT with built-in turn detection), **AssemblyAI** (streaming or batch), or sent as a complete file to **Aqua Voice** (Avalon model). The most frequent identifiers from your open file are sent as keyterms to bias recognition toward your code's vocabulary. You can switch between STT providers in the sidebar.
 2. **Context-aware routing:** When VS Code is the active window, the transcript goes through the full pipeline — commands, text operations, and LLM routing. **When another app is in the foreground** (Safari, Terminal, etc.), only system-level commands (navigation, scrolling, tab switching, clicking, app management) are processed. VS Code commands and code modifications are never accidentally triggered on other apps.
 3. **LLM routing (VS Code focused):** The transcript + editor context + terminal history is sent to **Groq** (default: Kimi K2) or **Cerebras** (default: Qwen 3 235B). You can choose from multiple models per provider via the Model dropdown in the sidebar. Thinking/reasoning is automatically suppressed for maximum speed (Qwen models get `/no_think`, GPT-OSS models use `reasoning_effort: low`). The LLM classifies the instruction and returns one of five types:
-   - **command** — runs a VS Code command (75+ supported)
-   - **modification** — applies a small, targeted edit to the current file (changes are highlighted in green/red)
+   - **command** — runs a VS Code command (130+ supported)
+   - **modification** — applies a small, targeted edit to the selected text (changes are highlighted in green/red). **Only available when you have text manually selected in the editor.** Without a selection, code-edit requests are routed to the agent or answered as a question instead.
    - **question** — shows the answer in a separate panel (only used when no agent is available or the user says "quick question"). When no agent is selected, a note suggests selecting one for better handling of complex requests.
    - **terminal** — translates natural language to a shell command and executes it
-   - **agent** — forwards an intelligent, context-aware prompt to Claude Code. This is the default for any non-trivial task when an agent is active. When no agent is selected, agent-type requests fall back to the quick question system.
+   - **agent** — forwards an intelligent, context-aware prompt to Claude Code. This is the default for any non-trivial task when an agent is active, and also handles code-edit requests when no text is selected. When no agent is selected, agent-type requests fall back to the quick question system.
 4. **Pre-LLM shortcuts:** Common phrases like "undo", "save", "scroll down", "enter", "delete", "focus editor", "ask Claude ...", keyboard shortcuts, and symbol navigation ("go to the handleCommand function") are handled instantly without waiting for the LLM. Semantic go-to ("go to the function that resets the board") uses a lightweight LLM call only when fuzzy name matching isn't confident enough.
 
 ---
@@ -50,12 +50,22 @@ Run **"Mantra: Start Recording"** from the Command Palette, press `Ctrl+Shift+1`
 
 ## What You Can Say
 
-### Code editing (VS Code focused)
-- "create a terminal-based tic tac toe game"
+### Code editing (VS Code focused, requires text selection)
+Code edits only happen when you have text manually selected in the editor. Select the lines you want to change, then speak:
 - "change this to a while loop"
-- "add a helper function to validate user input"
-- "put getters and setters"
+- "rename this variable to count"
+- "add a docstring to this function"
+- "remove the comments"
 - "for i in range len nums print nums i" (raw code dictation)
+
+Without a selection, code-edit requests are routed to the agent (if active) or answered as a question.
+
+### Agent tasks (VS Code focused)
+When an agent is active, complex or unselected code tasks go to the agent automatically:
+- "create a terminal-based tic tac toe game"
+- "add a helper function to validate user input"
+- "add authentication"
+- "refactor this to use async/await"
 
 ### Questions
 - "quick question, what does this function do?"
@@ -264,9 +274,9 @@ When VS Code is **not** the frontmost window, these additional commands route ke
 
 Mantra supports **Claude Code** as an AI agent backend via the [Claude Code VS Code extension](https://marketplace.visualstudio.com/items?itemName=anthropic.claude-code). Select **Claude Code** from the **Agent** dropdown in the sidebar Settings section. The `claude` CLI must be in your PATH.
 
-When an agent is active, it becomes the **default destination** for any non-trivial request. You don't need to say "ask Claude" — just speak naturally and complex tasks are automatically routed to the agent. Simple edits ("change this to a while loop", "rename this variable") still go through the fast modification path.
+When an agent is active, it becomes the **default destination** for any non-trivial request and for all code-edit requests when no text is selected. You don't need to say "ask Claude" — just speak naturally and tasks are automatically routed to the agent. If you have text selected in the editor, small edits ("change this to a while loop", "rename this variable") go through the fast modification path; otherwise they go to the agent.
 
-When no agent is selected (**None**), all requests that would normally be routed to an agent are handled locally — complex coding tasks become file modifications and knowledge questions are answered via the quick question system.
+When no agent is selected (**None**), code-edit requests without a selection are answered via the quick question system (with a note suggesting you select an agent). With text selected, modifications still work directly regardless of agent selection.
 
 ### Sending prompts to the agent
 Say "ask Claude to refactor this function", "ask agent how to fix that", or "ask LLM to explain this error". When "Send Context to Agent" is enabled, the activity log and terminal history are written to a context file that the agent can reference.
@@ -342,7 +352,7 @@ This is useful for low-latency command execution without any API calls beyond sp
 
 When "Send Context to Agent" is enabled (the default), Mantra writes the activity log and terminal history to a context file before each agent prompt. The first message to the agent includes an explanation of what Mantra is and a reference to the context file. Follow-up messages include a shorter reminder to re-check the file for updated context.
 
-**Selection model:** Before routing, Mantra runs a lightweight LLM call to determine the edit scope — whether the instruction applies to the full file, a specific range around the cursor (e.g., the enclosing function or if/else chain), or a user-described selection. This ensures that "change this to a switch statement" captures the entire if/elif/else block, not just the line under the cursor.
+**Selection model:** Before routing, Mantra runs a lightweight LLM call to handle pure selection commands — "select this function", "select the entire class", "select these if statements". This lets you say what you want to select in natural language instead of specifying exact line numbers. The selection model is only used for explicit selection requests; code modifications require you to manually select the target text first.
 
 The router and selection model prompts are visible and editable in the sidebar panel.
 
@@ -443,7 +453,7 @@ Select your preferred model from the **Model** dropdown in the sidebar. The list
 
 ## Supported IDE Commands (VS Code Focused)
 
-Over 75 pre-mapped VS Code commands. You can say these exactly or use natural variations (the LLM understands intent):
+Over 130 pre-mapped VS Code commands. You can say these exactly or use natural variations (the LLM understands intent):
 
 > save, save all, new file, close file, close other files, close all files, reopen closed editor, undo, redo, cut, copy, paste, select all, toggle line comment, toggle block comment, format document, format selection, rename symbol, quick fix, organize imports, expand selection, shrink selection, select next occurrence, duplicate line down, duplicate line up, move line up, move line down, add cursor above, add cursor below, fold all, unfold all, toggle word wrap, find, replace, find in files, replace in files, next tab, previous tab, tab one through tab nine, page up, page down, go to definition, peek definition, go to references, go to implementation, jump to bracket, focus editor, focus first editor, focus second editor, focus sidebar, focus panel, toggle output, toggle sidebar, toggle panel, toggle zen mode, split editor, toggle minimap, zoom in, zoom out, reset zoom, toggle terminal, focus terminal, new terminal, next terminal, previous terminal, focus agent, new conversation, accept changes, reject changes, focus explorer, focus search, focus source control, focus debug, focus extensions, show command palette, quick open, toggle breakpoint, start debugging, stop debugging, continue debugging, step over, step into, step out, stage file, stage all, unstage file, commit, push, pull, checkout branch, show diff, stash, pop stash, toggle fullscreen, show problems, show notifications, clear notifications, reveal in finder, copy file path, copy relative path, markdown preview, run task, run build task, run test task, clear terminal, terminal scroll up, terminal scroll down.
 
@@ -503,7 +513,7 @@ GROQ_API_KEY=gsk_... npm run test:llm
 LLM_PROVIDER=cerebras CEREBRAS_API_KEY=csk_... npm run test:llm
 ```
 
-The test harness (`test-llm.mjs`) makes real API calls using the exact prompts from `package.json` against realistic code samples. It covers 40 scenarios: 20 selection model tests, 12 semantic go-to tests, and 8 router tests.
+The test harness (`test-llm.mjs`) makes real API calls using the exact prompts from `package.json` against realistic code samples. It covers 53 scenarios: 20 selection model tests, 12 semantic go-to tests, and 21 router tests (across all 4 routing modes: with/without selection, with/without agent).
 
 ---
 
