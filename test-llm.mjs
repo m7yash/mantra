@@ -409,6 +409,129 @@ class DataProcessor:
     def _transform(self, record):
         return {k: v.strip() if isinstance(v, str) else v for k, v in record.items()}`,
   },
+
+  // Rich sample with logging, multiple sequential functions, diverse constructs
+  pythonRich: {
+    filename: 'pipeline.py',
+    language: 'python',
+    content: `import logging
+import json
+from pathlib import Path
+
+logger = logging.getLogger(__name__)
+
+def load_config(path):
+    """Load configuration from JSON file."""
+    logger.info(f"Loading config from {path}")
+    with open(path) as f:
+        data = json.load(f)
+    logger.debug(f"Config loaded: {len(data)} keys")
+    return data
+
+def validate_config(config):
+    """Validate configuration keys."""
+    required = ["input_dir", "output_dir", "batch_size"]
+    missing = [k for k in required if k not in config]
+    if missing:
+        logger.error(f"Missing required keys: {missing}")
+        raise ValueError(f"Missing keys: {missing}")
+    if config["batch_size"] <= 0:
+        logger.warning("batch_size must be positive, defaulting to 10")
+        config["batch_size"] = 10
+    logger.info("Config validation passed")
+    return config
+
+def read_input_files(input_dir):
+    """Read all JSON files from input directory."""
+    files = []
+    logger.info(f"Scanning {input_dir} for JSON files")
+    for p in sorted(Path(input_dir).glob("*.json")):
+        try:
+            with open(p) as f:
+                data = json.load(f)
+            logger.debug(f"Loaded {p.name}: {len(data)} records")
+            files.append({"name": p.name, "records": data})
+        except json.JSONDecodeError as e:
+            logger.error(f"Failed to parse {p.name}: {e}")
+        except PermissionError:
+            logger.warning(f"Permission denied: {p.name}")
+    logger.info(f"Loaded {len(files)} files")
+    return files
+
+def transform_record(record, rules):
+    """Apply transformation rules to a single record."""
+    result = dict(record)
+    for rule in rules:
+        field = rule.get("field")
+        action = rule.get("action")
+        if field not in result:
+            continue
+        if action == "uppercase":
+            result[field] = str(result[field]).upper()
+        elif action == "strip":
+            result[field] = str(result[field]).strip()
+        elif action == "default":
+            if not result[field]:
+                result[field] = rule.get("value", "")
+        elif action == "delete":
+            del result[field]
+    return result
+
+def process_batch(records, rules, batch_size):
+    """Process records in batches with transformation rules."""
+    results = []
+    errors = []
+    for i in range(0, len(records), batch_size):
+        batch = records[i:i + batch_size]
+        logger.info(f"Processing batch {i // batch_size + 1} ({len(batch)} records)")
+        for record in batch:
+            try:
+                transformed = transform_record(record, rules)
+                if transformed.get("valid", True):
+                    results.append(transformed)
+                else:
+                    logger.warning(f"Skipping invalid record: {record.get('id', '?')}")
+            except Exception as e:
+                logger.error(f"Transform failed for {record.get('id', '?')}: {e}")
+                errors.append({"record": record, "error": str(e)})
+    logger.info(f"Batch processing complete: {len(results)} ok, {len(errors)} errors")
+    return results, errors
+
+def write_output(results, output_dir):
+    """Write results to output directory."""
+    output_path = Path(output_dir) / "output.json"
+    logger.info(f"Writing {len(results)} results to {output_path}")
+    with open(output_path, "w") as f:
+        json.dump(results, f, indent=2)
+    logger.info("Output written successfully")
+
+def run_pipeline(config_path):
+    """Main pipeline orchestrator."""
+    logger.info("Starting pipeline")
+    config = load_config(config_path)
+    config = validate_config(config)
+    files = read_input_files(config["input_dir"])
+    all_records = []
+    for f in files:
+        all_records.extend(f["records"])
+    logger.info(f"Total records: {len(all_records)}")
+    rules = config.get("rules", [])
+    results, errors = process_batch(all_records, rules, config["batch_size"])
+    if errors:
+        logger.warning(f"{len(errors)} errors during processing")
+        for err in errors:
+            logger.debug(f"  Error: {err}")
+    write_output(results, config["output_dir"])
+    logger.info("Pipeline complete")
+    return results
+
+if __name__ == "__main__":
+    import sys
+    if len(sys.argv) != 2:
+        print("Usage: pipeline.py <config.json>")
+        sys.exit(1)
+    run_pipeline(sys.argv[1])`,
+  },
 };
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
@@ -752,8 +875,8 @@ const selectionTests = [
   },
   {
     name: 'nested-inner-for-in-pairs',
-    utterance: 'select the for loop inside this one',
-    cursorLine: 19, // inside inner loop body (if nums[i]+nums[j])
+    utterance: 'select the inner for loop',
+    cursorLine: 20, // inside inner loop body (pairs.append line)
     file: SAMPLE_FILES.pythonNested,
     validate: (raw) => {
       const m = raw.trim().toLowerCase().match(/^select\s+(\d+)\s+(\d+)/);
@@ -862,6 +985,257 @@ const selectionTests = [
       return {
         pass: +start <= 23 && +end >= 40,
         detail: `select ${start} ${end} (expected nested_conditionals ~23-40)`,
+      };
+    },
+  },
+
+  // === Complex / advanced selection tests (pythonRich + pythonIfElse) ===
+
+  // -- Ordinal selection: "the fourth elif" --
+  {
+    name: 'fourth-elif',
+    utterance: 'select the fourth elif statement',
+    cursorLine: 30, // inside the if/elif chain
+    file: SAMPLE_FILES.pythonIfElse,
+    validate: (raw) => {
+      const m = raw.trim().toLowerCase().match(/^select\s+(\d+)\s+(\d+)/);
+      if (!m) return { pass: false, detail: `Expected select, got: ${raw.slice(0, 60)}` };
+      const [, start, end] = m;
+      // 4th elif is "elif temp < 35:" (27-30). Accept ±1 branch tolerance (23-34).
+      // Model may count initial if as a branch, shifting by one.
+      return {
+        pass: +start >= 23 && +start <= 31 && +end >= 26 && +end <= 34 && (+end - +start) >= 2,
+        detail: `select ${start} ${end} (expected ~4th elif branch, ±1 tolerance)`,
+      };
+    },
+  },
+  {
+    name: 'second-elif',
+    utterance: 'select the second elif',
+    cursorLine: 20,
+    file: SAMPLE_FILES.pythonIfElse,
+    validate: (raw) => {
+      const m = raw.trim().toLowerCase().match(/^select\s+(\d+)\s+(\d+)/);
+      if (!m) return { pass: false, detail: `Expected select, got: ${raw.slice(0, 60)}` };
+      const [, start, end] = m;
+      // 2nd elif is "elif temp < 15:" at lines 19-22
+      return {
+        pass: +start >= 19 && +start <= 20 && +end >= 21 && +end <= 22,
+        detail: `select ${start} ${end} (expected 2nd elif ~19-22)`,
+      };
+    },
+  },
+  {
+    name: 'else-block',
+    utterance: 'select the else block',
+    cursorLine: 30, // inside the chain
+    file: SAMPLE_FILES.pythonIfElse,
+    validate: (raw) => {
+      const m = raw.trim().toLowerCase().match(/^select\s+(\d+)\s+(\d+)/);
+      if (!m) return { pass: false, detail: `Expected select, got: ${raw.slice(0, 60)}` };
+      const [, start, end] = m;
+      // else block at lines 35-38
+      return {
+        pass: +start >= 35 && +start <= 36 && +end >= 37 && +end <= 38,
+        detail: `select ${start} ${end} (expected else block ~35-38)`,
+      };
+    },
+  },
+
+  // -- Multi-function selection: "this function and the next two" --
+  {
+    name: 'this-and-next-two-functions',
+    utterance: 'select this function and the next two as well',
+    cursorLine: 10, // inside load_config (lines 7-13)
+    file: SAMPLE_FILES.pythonRich,
+    validate: (raw) => {
+      const m = raw.trim().toLowerCase().match(/^select\s+(\d+)\s+(\d+)/);
+      if (!m) return { pass: false, detail: `Expected select, got: ${raw.slice(0, 60)}` };
+      const [, start, end] = m;
+      // load_config (7-13), validate_config (15-26), read_input_files (28-43)
+      return {
+        pass: +start <= 7 && +end >= 43,
+        detail: `select ${start} ${end} (expected 3 functions ~7-43)`,
+      };
+    },
+  },
+  {
+    name: 'next-three-lines',
+    utterance: 'select the next three lines',
+    cursorLine: 70, // logger.info line in process_batch
+    file: SAMPLE_FILES.pythonRich,
+    validate: (raw) => {
+      const m = raw.trim().toLowerCase().match(/^select\s+(\d+)\s+(\d+)/);
+      if (!m) return { pass: false, detail: `Expected select, got: ${raw.slice(0, 60)}` };
+      const [, start, end] = m;
+      // Next 3 lines after cursor 70 = lines 71-73
+      return {
+        pass: +start === 71 && +end === 73,
+        detail: `select ${start} ${end} (expected 71 73)`,
+      };
+    },
+  },
+
+  // -- Content-based selection: "the logs in this function" --
+  {
+    name: 'logs-in-function',
+    utterance: 'select the log statements in this function',
+    cursorLine: 10, // inside load_config
+    file: SAMPLE_FILES.pythonRich,
+    validate: (raw) => {
+      const m = raw.trim().toLowerCase().match(/^select\s+(\d+)\s+(\d+)/);
+      if (!m) return { pass: false, detail: `Expected select, got: ${raw.slice(0, 60)}` };
+      const [, start, end] = m;
+      // load_config has logger calls at lines 9 and 12.
+      // Should cover at least both log lines.
+      return {
+        pass: +start <= 9 && +end >= 12,
+        detail: `select ${start} ${end} (expected log lines ~9-12)`,
+      };
+    },
+  },
+
+  // -- Try/except selection --
+  {
+    name: 'select-try-except-in-for',
+    utterance: 'select this try except block',
+    cursorLine: 39, // inside the except JSONDecodeError of read_input_files
+    file: SAMPLE_FILES.pythonRich,
+    validate: (raw) => {
+      const m = raw.trim().toLowerCase().match(/^select\s+(\d+)\s+(\d+)/);
+      if (!m) return { pass: false, detail: `Expected select, got: ${raw.slice(0, 60)}` };
+      const [, start, end] = m;
+      // try/except in read_input_files spans lines 33-41.
+      // The cursor at 39 (inside except block) is unambiguously in this try/except.
+      return {
+        pass: +start <= 33 && +end >= 41,
+        detail: `select ${start} ${end} (expected try/except ~33-41)`,
+      };
+    },
+  },
+
+  // -- Select by description --
+  {
+    name: 'select-batch-processing-function',
+    utterance: 'select the function that processes batches',
+    cursorLine: 70,
+    file: SAMPLE_FILES.pythonRich,
+    validate: (raw) => {
+      const m = raw.trim().toLowerCase().match(/^select\s+(\d+)\s+(\d+)/);
+      if (!m) return { pass: false, detail: `Expected select, got: ${raw.slice(0, 60)}` };
+      const [, start, end] = m;
+      // process_batch spans lines 64-82
+      return {
+        pass: +start <= 64 && +end >= 82,
+        detail: `select ${start} ${end} (expected process_batch ~64-82)`,
+      };
+    },
+  },
+
+  // -- Second elif in transform_record --
+  {
+    name: 'second-elif-in-transform',
+    utterance: 'select the second elif in this function',
+    cursorLine: 54, // inside transform_record
+    file: SAMPLE_FILES.pythonRich,
+    validate: (raw) => {
+      const m = raw.trim().toLowerCase().match(/^select\s+(\d+)\s+(\d+)/);
+      if (!m) return { pass: false, detail: `Expected select, got: ${raw.slice(0, 60)}` };
+      const [, start, end] = m;
+      // Elifs: 1st="strip"(55-56), 2nd="default"(57-59), 3rd="delete"(60-61)
+      return {
+        pass: +start >= 57 && +start <= 58 && +end >= 58 && +end <= 59,
+        detail: `select ${start} ${end} (expected 2nd elif "default" ~57-59)`,
+      };
+    },
+  },
+
+  // -- Select from here to end of function --
+  {
+    name: 'select-to-end-of-function',
+    utterance: 'select from here to the end of the function',
+    cursorLine: 97, // inside run_pipeline, after first few lines
+    file: SAMPLE_FILES.pythonRich,
+    validate: (raw) => {
+      const m = raw.trim().toLowerCase().match(/^select\s+(\d+)\s+(\d+)/);
+      if (!m) return { pass: false, detail: `Expected select, got: ${raw.slice(0, 60)}` };
+      const [, start, end] = m;
+      // From cursor line 97 to end of run_pipeline (line 110)
+      return {
+        pass: +start >= 97 && +start <= 98 && +end >= 110,
+        detail: `select ${start} ${end} (expected ~97-110)`,
+      };
+    },
+  },
+
+  // -- Select the imports --
+  {
+    name: 'select-imports',
+    utterance: 'select the imports',
+    cursorLine: 2,
+    file: SAMPLE_FILES.pythonRich,
+    validate: (raw) => {
+      const m = raw.trim().toLowerCase().match(/^select\s+(\d+)\s+(\d+)/);
+      if (!m) return { pass: false, detail: `Expected select, got: ${raw.slice(0, 60)}` };
+      const [, start, end] = m;
+      // imports are lines 1-3
+      return {
+        pass: +start <= 1 && +end >= 3 && +end <= 5,
+        detail: `select ${start} ${end} (expected imports ~1-3)`,
+      };
+    },
+  },
+
+  // -- Select the inner for loop in process_batch --
+  {
+    name: 'inner-for-in-process-batch',
+    utterance: 'select the inner for loop',
+    cursorLine: 73, // inside the inner for record loop
+    file: SAMPLE_FILES.pythonRich,
+    validate: (raw) => {
+      const m = raw.trim().toLowerCase().match(/^select\s+(\d+)\s+(\d+)/);
+      if (!m) return { pass: false, detail: `Expected select, got: ${raw.slice(0, 60)}` };
+      const [, start, end] = m;
+      // Inner for: "for record in batch:" spans lines 71-80
+      // Must NOT include outer for (line 68). Allow some tolerance on start.
+      return {
+        pass: +start >= 70 && +start <= 73 && +end >= 79 && +end <= 81 && +start > 68,
+        detail: `select ${start} ${end} (expected inner for ~71-80, NOT outer)`,
+      };
+    },
+  },
+
+  // -- Select just this line --
+  {
+    name: 'select-just-this-line',
+    utterance: 'select just this line',
+    cursorLine: 25,
+    file: SAMPLE_FILES.pythonRich,
+    validate: (raw) => {
+      const m = raw.trim().toLowerCase().match(/^select\s+(\d+)\s+(\d+)/);
+      if (!m) return { pass: false, detail: `Expected select, got: ${raw.slice(0, 60)}` };
+      const [, start, end] = m;
+      return {
+        pass: +start === 25 && +end === 25,
+        detail: `select ${start} ${end} (expected 25 25)`,
+      };
+    },
+  },
+
+  // -- Select the error handling in read_input_files --
+  {
+    name: 'select-except-blocks',
+    utterance: 'select the except blocks in this function',
+    cursorLine: 36, // inside read_input_files
+    file: SAMPLE_FILES.pythonRich,
+    validate: (raw) => {
+      const m = raw.trim().toLowerCase().match(/^select\s+(\d+)\s+(\d+)/);
+      if (!m) return { pass: false, detail: `Expected select, got: ${raw.slice(0, 60)}` };
+      const [, start, end] = m;
+      // except blocks at lines 38-41 (JSONDecodeError + PermissionError)
+      return {
+        pass: +start >= 38 && +start <= 39 && +end >= 40 && +end <= 42,
+        detail: `select ${start} ${end} (expected except blocks ~38-41)`,
       };
     },
   },
