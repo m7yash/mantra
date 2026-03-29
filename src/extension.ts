@@ -1589,7 +1589,11 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
           // --- quick command paths ---
           const maybeHandled = await tryExecuteMappedCommand(transcript);
           if (maybeHandled) { pushLog('command', transcript); return; }
-          if (await handleTextCommand(transcript, context)) { pushLog('command', transcript); return; }
+          // Build semantic goto callback if LLM is available (for "go to the error handler" etc.)
+          const semanticGotoCb = (model && model.hasLlm())
+            ? (desc: string, syms: string[]) => model!.semanticGoto(desc, syms)
+            : undefined;
+          if (await handleTextCommand(transcript, context, semanticGotoCb)) { pushLog('command', transcript); return; }
 
           // --- LLM disabled? ---
           if (commandsOnly) {
@@ -1790,7 +1794,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
           } else if (result.type === 'command') {
             const phrase = (result.payload || '').toString().trim();
             const ok =
-              (await handleTextCommand(phrase, context)) ||
+              (await handleTextCommand(phrase, context, semanticGotoCb)) ||
               (await tryExecuteMappedCommand(phrase));
             if (!ok) {
               vscode.window.showWarningMessage(`Unknown command: ${phrase}`);

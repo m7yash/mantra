@@ -263,6 +263,119 @@ async function openClosestFileByName(targetRaw: string): Promise<boolean> {
   return true;
 }
 
+/** Split a camelCase or snake_case identifier into lowercase tokens. */
+function tokenizeIdentifier(name: string): string[] {
+  // "processActivityFile" → ["process", "activity", "file"]
+  // "process_activity_file" → ["process", "activity", "file"]
+  return name
+    .replace(/([a-z])([A-Z])/g, '$1 $2')  // camelCase split
+    .replace(/[_\-]+/g, ' ')               // snake_case / kebab split
+    .toLowerCase()
+    .split(/\s+/)
+    .filter(Boolean);
+}
+
+/** Navigate to a symbol by spoken name using the document symbol provider. */
+async function gotoSymbolByName(
+  spokenName: string,
+  semanticGoto?: (description: string, symbols: string[]) => Promise<string | null>,
+): Promise<boolean> {
+  const ed = activeEditor();
+  if (!ed) return false;
+
+  const symbols = await new Promise<vscode.DocumentSymbol[] | null>((resolve) => {
+    let settled = false;
+    const timer = setTimeout(() => { if (!settled) { settled = true; resolve(null); } }, 800);
+    Promise.resolve(
+      vscode.commands.executeCommand<vscode.DocumentSymbol[]>(
+        'vscode.executeDocumentSymbolProvider',
+        ed.document.uri,
+      )
+    ).then(
+      v => { if (!settled) { settled = true; clearTimeout(timer); resolve(v ?? null); } },
+      _ => { if (!settled) { settled = true; clearTimeout(timer); resolve(null); } },
+    );
+  });
+
+  if (!symbols || !Array.isArray(symbols) || symbols.length === 0) {
+    vscode.window.showWarningMessage(`No symbols found in the current file.`);
+    return false;
+  }
+
+  // Flatten the symbol tree
+  const flat: vscode.DocumentSymbol[] = [];
+  function collect(list: vscode.DocumentSymbol[]) {
+    for (const s of list) {
+      flat.push(s);
+      if (s.children?.length) collect(s.children);
+    }
+  }
+  collect(symbols);
+
+  // Tokenize spoken name
+  const spokenTokens = spokenName.toLowerCase().replace(/[^\w\s]/g, ' ').split(/\s+/).filter(Boolean);
+  if (spokenTokens.length === 0) return false;
+
+  // Score each symbol
+  let bestSymbol: vscode.DocumentSymbol | null = null;
+  let bestScore = 0;
+
+  for (const sym of flat) {
+    const symTokens = tokenizeIdentifier(sym.name);
+    if (symTokens.length === 0) continue;
+
+    // Check how many spoken tokens appear in the symbol tokens (in order)
+    let si = 0;
+    for (const st of symTokens) {
+      if (si < spokenTokens.length && st.startsWith(spokenTokens[si])) si++;
+    }
+    const score = si / spokenTokens.length;
+
+    // Also check exact substring match (e.g. "handle command" matches "handleCommand")
+    const joined = symTokens.join('');
+    const spokenJoined = spokenTokens.join('');
+    const substringScore = joined.includes(spokenJoined) ? 1.0
+      : spokenJoined.includes(joined) ? 0.9
+      : 0;
+
+    const finalScore = Math.max(score, substringScore);
+
+    if (finalScore > bestScore) {
+      bestScore = finalScore;
+      bestSymbol = sym;
+    }
+  }
+
+  if (!bestSymbol || bestScore < 0.6) {
+    // Tier 2: LLM semantic fallback — understands "the function that resets the board"
+    if (semanticGoto && flat.length > 0) {
+      try {
+        const llmMatch = await semanticGoto(spokenName, flat.map(s => s.name));
+        if (llmMatch) {
+          const found = flat.find(s => s.name === llmMatch);
+          if (found) {
+            const pos = found.range.start;
+            ed.selection = new vscode.Selection(pos, pos);
+            ed.revealRange(found.range, vscode.TextEditorRevealType.InCenterIfOutsideViewport);
+            vscode.window.setStatusBarMessage(`Jumped to ${found.name}`, 1500);
+            return true;
+          }
+        }
+      } catch (err) {
+        console.warn('[Mantra] Semantic goto failed:', err);
+      }
+    }
+    vscode.window.showWarningMessage(`Could not find symbol "${spokenName}" in the current file.`);
+    return false;
+  }
+
+  const pos = bestSymbol.range.start;
+  ed.selection = new vscode.Selection(pos, pos);
+  ed.revealRange(bestSymbol.range, vscode.TextEditorRevealType.InCenterIfOutsideViewport);
+  vscode.window.setStatusBarMessage(`Jumped to ${bestSymbol.name}`, 1500);
+  return true;
+}
+
 /** Jump to one-based line number */
 function gotoLine(ed: vscode.TextEditor, n: number) {
   const line = clamp(n - 1, 0, ed.document.lineCount - 1);
@@ -337,7 +450,11 @@ async function deleteSelection(ed: vscode.TextEditor) {
 }
 
 /** MAIN ENTRY */
-export async function handleCommand(utterance: string, _context?: vscode.ExtensionContext): Promise<boolean> {
+export async function handleCommand(
+  utterance: string,
+  _context?: vscode.ExtensionContext,
+  semanticGoto?: (description: string, symbols: string[]) => Promise<string | null>,
+): Promise<boolean> {
   const s = norm(utterance);
   const ed = activeEditor();
 
@@ -384,6 +501,64 @@ export async function handleCommand(utterance: string, _context?: vscode.Extensi
   // go to top/bottom
   if (ed && /^(go to )?(top|start)$/.test(s)) { gotoLine(ed, 1); return true; }
   if (ed && /^(go to )?(bottom|end)$/.test(s)) { gotoLine(ed, ed.document.lineCount); return true; }
+
+  // go to <name> function/method/class/... OR go to function/method/class/... <name>
+  {
+    const SYM_KINDS = '(?:function|method|class|interface|enum|type|variable|constant|property|struct)';
+    const m1 = s.match(new RegExp(`^(?:go to|goto|jump to)\\s+(?:the\\s+)?(.+?)\\s+${SYM_KINDS}$`));
+    const m2 = s.match(new RegExp(`^(?:go to|goto|jump to)\\s+(?:the\\s+)?${SYM_KINDS}\\s+(.+)$`));
+    const symName = (m1?.[1] || m2?.[1] || '').trim();
+    if (symName) {
+      const ok = await gotoSymbolByName(symName, semanticGoto);
+      if (ok) return true;
+    }
+  }
+
+  // Semantic go-to without a SYM_KIND keyword: "go to the error handler", "go to the function that resets the board"
+  // Only fires if LLM callback is available. Minimum 4 chars prevents matching "go to 5".
+  if (ed && semanticGoto) {
+    const mSemantic = s.match(/^(?:go to|goto|jump to)\s+(?:the\s+)?(.{4,})$/);
+    if (mSemantic) {
+      const desc = mSemantic[1].trim();
+      // Skip if it looks like a number (already handled by go-to-line above)
+      if (!/^\d+$/.test(desc.replace(/\s+/g, ''))) {
+        const symbols = await new Promise<vscode.DocumentSymbol[] | null>((resolve) => {
+          let settled = false;
+          const timer = setTimeout(() => { if (!settled) { settled = true; resolve(null); } }, 800);
+          Promise.resolve(
+            vscode.commands.executeCommand<vscode.DocumentSymbol[]>(
+              'vscode.executeDocumentSymbolProvider', ed!.document.uri,
+            )
+          ).then(
+            v => { if (!settled) { settled = true; clearTimeout(timer); resolve(v ?? null); } },
+            _ => { if (!settled) { settled = true; clearTimeout(timer); resolve(null); } },
+          );
+        });
+        if (symbols && symbols.length > 0) {
+          const flat: vscode.DocumentSymbol[] = [];
+          const collectSyms = (list: vscode.DocumentSymbol[]) => {
+            for (const sym of list) { flat.push(sym); if (sym.children?.length) collectSyms(sym.children); }
+          };
+          collectSyms(symbols);
+          try {
+            const llmMatch = await semanticGoto(desc, flat.map(sym => sym.name));
+            if (llmMatch) {
+              const found = flat.find(sym => sym.name === llmMatch);
+              if (found) {
+                const pos = found.range.start;
+                ed.selection = new vscode.Selection(pos, pos);
+                ed.revealRange(found.range, vscode.TextEditorRevealType.InCenterIfOutsideViewport);
+                vscode.window.setStatusBarMessage(`Jumped to ${found.name}`, 1500);
+                return true;
+              }
+            }
+          } catch (err) {
+            console.warn('[Mantra] Semantic goto failed:', err);
+          }
+        }
+      }
+    }
+  }
 
   // scroll up/down [N] (lines|pages|half page) | page up/down | scroll N (defaults to lines, down)
   {

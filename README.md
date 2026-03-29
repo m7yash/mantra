@@ -25,7 +25,7 @@ Discord: https://discord.gg/fmWCScWuUn
    - **question** — shows the answer in a separate panel (only used when no agent is available or the user says "quick question"). When no agent is selected, a note suggests selecting one for better handling of complex requests.
    - **terminal** — translates natural language to a shell command and executes it
    - **agent** — forwards an intelligent, context-aware prompt to Claude Code. This is the default for any non-trivial task when an agent is active. When no agent is selected, agent-type requests fall back to the quick question system.
-4. **Pre-LLM shortcuts:** Common phrases like "undo", "save", "scroll down", "enter", "delete", "focus editor", "ask Claude ...", and keyboard shortcuts are handled instantly without waiting for the LLM.
+4. **Pre-LLM shortcuts:** Common phrases like "undo", "save", "scroll down", "enter", "delete", "focus editor", "ask Claude ...", keyboard shortcuts, and symbol navigation ("go to the handleCommand function") are handled instantly without waiting for the LLM. Semantic go-to ("go to the function that resets the board") uses a lightweight LLM call only when fuzzy name matching isn't confident enough.
 
 ---
 
@@ -73,6 +73,16 @@ Run **"Mantra: Start Recording"** from the Command Palette, press `Ctrl+Shift+1`
 - "toggle sidebar", "zen mode", "zoom in"
 - "focus editor", "focus terminal", "focus explorer"
 - "next tab", "previous tab", "first tab", "tab three"
+
+### Symbol navigation (VS Code focused)
+Navigate directly to any function, class, method, or symbol in the current file:
+
+- **By name:** "go to the handleCommand function", "go to function processActivityFile", "jump to class GameBoard"
+- **By description (semantic):** "go to the function that resets the board", "go to the error handler", "jump to the input validation function"
+
+Name-based matching uses fast token fuzzy matching (no LLM call). If the name doesn't match closely enough, or if you describe what a symbol does instead of saying its name, Mantra falls back to an LLM-powered semantic match — it sends the list of symbol names in the file to the LLM and picks the best match. This means "go to the function that checks if a move is valid" can find `is_valid_move` even though the words don't overlap.
+
+**Relative navigation** also works via the LLM: "go to the next else if", "jump to the catch block" — the LLM finds the target line in the visible code and navigates there.
 
 ### Opening files
 - "open script dot py" → opens `script.py`
@@ -332,6 +342,8 @@ This is useful for low-latency command execution without any API calls beyond sp
 
 When "Send Context to Agent" is enabled (the default), Mantra writes the activity log and terminal history to a context file before each agent prompt. The first message to the agent includes an explanation of what Mantra is and a reference to the context file. Follow-up messages include a shorter reminder to re-check the file for updated context.
 
+**Selection model:** Before routing, Mantra runs a lightweight LLM call to determine the edit scope — whether the instruction applies to the full file, a specific range around the cursor (e.g., the enclosing function or if/else chain), or a user-described selection. This ensures that "change this to a switch statement" captures the entire if/elif/else block, not just the line under the cursor.
+
 The router and selection model prompts are visible and editable in the sidebar panel.
 
 ---
@@ -435,7 +447,7 @@ Over 75 pre-mapped VS Code commands. You can say these exactly or use natural va
 
 > save, save all, new file, close file, close other files, close all files, reopen closed editor, undo, redo, cut, copy, paste, select all, toggle line comment, toggle block comment, format document, format selection, rename symbol, quick fix, organize imports, expand selection, shrink selection, select next occurrence, duplicate line down, duplicate line up, move line up, move line down, add cursor above, add cursor below, fold all, unfold all, toggle word wrap, find, replace, find in files, replace in files, next tab, previous tab, tab one through tab nine, page up, page down, go to definition, peek definition, go to references, go to implementation, jump to bracket, focus editor, focus first editor, focus second editor, focus sidebar, focus panel, toggle output, toggle sidebar, toggle panel, toggle zen mode, split editor, toggle minimap, zoom in, zoom out, reset zoom, toggle terminal, focus terminal, new terminal, next terminal, previous terminal, focus agent, new conversation, accept changes, reject changes, focus explorer, focus search, focus source control, focus debug, focus extensions, show command palette, quick open, toggle breakpoint, start debugging, stop debugging, continue debugging, step over, step into, step out, stage file, stage all, unstage file, commit, push, pull, checkout branch, show diff, stash, pop stash, toggle fullscreen, show problems, show notifications, clear notifications, reveal in finder, copy file path, copy relative path, markdown preview, run task, run build task, run test task, clear terminal, terminal scroll up, terminal scroll down.
 
-Additional text operations handled directly (no LLM needed): go to line N, select/copy/cut/delete line N, select/copy/cut/delete lines A to B, scroll up/down [N lines/pages], page up/down, new line above/below, indent, outdent, delete, paste, kill process, tab complete, run last command.
+Additional text operations handled directly (no LLM needed): go to line N, go to symbol by name ("go to function X"), select/copy/cut/delete line N, select/copy/cut/delete lines A to B, scroll up/down [N lines/pages], page up/down, new line above/below, indent, outdent, delete, paste, kill process, tab complete, run last command.
 
 ---
 
@@ -476,6 +488,22 @@ Mantra works in a **Remote - WSL** window. Use **WSLg** (audio bridge) and a Pul
 ```bash
 echo 'export MANTRA_FFMPEG_PATH=/usr/bin/ffmpeg' >> ~/.bashrc
 ```
+
+---
+
+## Testing
+
+Run the end-to-end LLM test suite to verify prompt quality across selection model, semantic go-to, and router:
+
+```bash
+# Groq (default)
+GROQ_API_KEY=gsk_... npm run test:llm
+
+# Cerebras
+LLM_PROVIDER=cerebras CEREBRAS_API_KEY=csk_... npm run test:llm
+```
+
+The test harness (`test-llm.mjs`) makes real API calls using the exact prompts from `package.json` against realistic code samples. It covers 40 scenarios: 20 selection model tests, 12 semantic go-to tests, and 8 router tests.
 
 ---
 

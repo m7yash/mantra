@@ -1616,6 +1616,52 @@ export class Model {
     }
   }
 
+  async semanticGoto(
+    description: string,
+    symbolNames: string[],
+  ): Promise<string | null> {
+    if (symbolNames.length === 0) return null;
+
+    const systemPrompt = [
+      'You are a code navigation assistant.',
+      'Given a spoken description and a list of symbol names from a code file,',
+      'return the EXACT name of the symbol that best matches the description.',
+      'Output ONLY the symbol name, nothing else. No explanation, no quotes, no reasoning.',
+      'If no symbol matches the description, output: NONE',
+    ].join('\n');
+
+    const userPrompt = [
+      `Description: "${description}"`,
+      '',
+      'Symbols in file:',
+      ...symbolNames.map(n => `- ${n}`),
+    ].join('\n');
+
+    try {
+      const raw = await this.chatText({
+        model: this.getModel(),
+        temperature: 0,
+        reasoning_effort: 'low',
+        messages: [
+          { role: 'system', content: systemPrompt },
+          { role: 'user', content: userPrompt },
+        ],
+      });
+
+      const result = (raw || '').trim();
+      if (result === 'NONE' || !result) return null;
+
+      // Verify against provided list (exact, then case-insensitive)
+      const exact = symbolNames.find(n => n === result);
+      if (exact) return exact;
+      const ci = symbolNames.find(n => n.toLowerCase() === result.toLowerCase());
+      return ci ?? null;
+    } catch (err) {
+      console.warn('[Mantra] Semantic goto LLM failed:', err);
+      return null;
+    }
+  }
+
   async decide(
     utterance: string,
     ctx: {
