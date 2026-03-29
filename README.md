@@ -51,7 +51,7 @@ Run **"Mantra: Start Recording"** from the Command Palette, press `Ctrl+Shift+1`
 ## What You Can Say
 
 ### Code editing (VS Code focused, requires text selection)
-Code edits only happen when you have text manually selected in the editor. Select the lines you want to change, then speak:
+Code edits only happen when you have text selected in the editor — either selected manually or via a voice "select" command (see below). Select the lines you want to change, then speak:
 - "change this to a while loop"
 - "rename this variable to count"
 - "add a docstring to this function"
@@ -59,6 +59,16 @@ Code edits only happen when you have text manually selected in the editor. Selec
 - "for i in range len nums print nums i" (raw code dictation)
 
 Without a selection, code-edit requests are routed to the agent (if active) or answered as a question.
+
+### Voice selection (VS Code focused)
+Say "select" to select code by description, then follow up with an edit:
+- "select this function" → selects the enclosing function
+- "select the inner for loop" → selects just the nested loop, not the outer one
+- "select the if statement" → selects the full if/elif/else chain
+- "highlight the try block" → selects the try/except block
+- "select lines 10 to 20" → selects exact line range
+
+Once selected, your next voice command can edit it: "select this function" → "add a docstring" performs the edit on the selected code.
 
 ### Agent tasks (VS Code focused)
 When an agent is active, complex or unselected code tasks go to the agent automatically:
@@ -279,7 +289,7 @@ When an agent is active, it becomes the **default destination** for any non-triv
 When no agent is selected (**None**), code-edit requests without a selection are answered via the quick question system (with a note suggesting you select an agent). With text selected, modifications still work directly regardless of agent selection.
 
 ### Sending prompts to the agent
-Say "ask Claude to refactor this function", "ask agent how to fix that", or "ask LLM to explain this error". When "Send Context to Agent" is enabled, the activity log and terminal history are written to a context file that the agent can reference.
+Say "ask Claude to refactor this function", "ask agent how to fix that", or "ask LLM to explain this error". When "Send Context to Agent" is enabled, the current editor state (filename, cursor position, selected text), activity log, terminal history, and workspace file listing are written to a context file that the agent can reference.
 
 You can also just say what you want without mentioning any agent — "add an AI opponent", "improve the performance", "add authentication" — and it will be routed to the agent automatically.
 
@@ -329,7 +339,7 @@ Mantra adds a panel to the VS Code activity bar. From the sidebar you can:
   - **Sensitivity** — (Aqua Voice / AssemblyAI batch only) microphone sensitivity for silence detection: Low (noisy environments), Medium (default), High (quiet environments).
   - **Microphone** — pick your input device. Changing the microphone while recording stops the current session (without transcribing) so the new mic is used on next start.
   - **Commands-Only Mode** — toggle with ON/OFF indicator (see below)
-  - **Send Context to Agent** — toggle ON/OFF. When enabled (default), the activity log and terminal history are written to a temp file and referenced in prompts sent to the agent. Turn off to send only the raw transcript.
+  - **Send Context to Agent** — toggle ON/OFF. When enabled (default), editor state (filename, cursor, selection), activity log, terminal history, and workspace files are written to a temp file and referenced in prompts sent to the agent. Turn off to send only the raw transcript.
   - **All Settings** / **Keyboard Shortcuts**
 - **API Keys** — configure Deepgram, AssemblyAI, Aqua Voice, Groq, and Cerebras keys
 - **Router Prompt** — view and edit the main LLM system prompt directly in the sidebar
@@ -341,7 +351,7 @@ Mantra adds a panel to the VS Code activity bar. From the sidebar you can:
 Toggle via the sidebar or Command Palette. When enabled (shown as **ON** in the sidebar):
 
 - **No LLM calls** — speech is still transcribed via your selected STT provider, but the transcript is only matched against pre-mapped commands and text operations.
-- **What works:** all 75+ IDE commands ("save", "undo", "format document"), text operations ("go to line 20", "select lines 4 to 19", "scroll down", "delete line"), keyboard shortcuts ("command B"), system commands, focus/navigation commands, and pause/resume.
+- **What works:** all 130+ IDE commands ("save", "undo", "format document"), text operations ("go to line 20", "select lines 4 to 19", "scroll down", "delete line"), keyboard shortcuts ("command B"), system commands, focus/navigation commands, and pause/resume.
 - **What doesn't work:** code edits, questions, terminal command generation, and agent forwarding — anything that requires the LLM to interpret intent.
 
 This is useful for low-latency command execution without any API calls beyond speech-to-text, or when you don't have an LLM API key configured.
@@ -350,7 +360,13 @@ This is useful for low-latency command execution without any API calls beyond sp
 
 ## Agent Context
 
-When "Send Context to Agent" is enabled (the default), Mantra writes the activity log and terminal history to a context file before each agent prompt. The first message to the agent includes an explanation of what Mantra is and a reference to the context file. Follow-up messages include a shorter reminder to re-check the file for updated context.
+When "Send Context to Agent" is enabled (the default), Mantra writes a context file before each agent prompt containing:
+- **Editor state** — current filename, language, cursor position, selected text (if any)
+- **Activity log** — timestamped history of commands, edits, and transcripts
+- **Terminal history** — recent shell commands and their output
+- **Workspace files** — listing of files and folders in the project
+
+The first message to the agent includes a preamble explaining what Mantra is, prepended before the user's transcript, with a reference to the context file. Follow-up messages send just the raw transcript (the context file is still updated each time).
 
 **Selection model:** When the transcript contains a selection keyword ("select", "highlight", "lines X to Y"), Mantra runs a separate lightweight LLM call to determine the exact lines to select — "select the inner for loop", "select this function", "highlight the try block". This lets you say what you want to select in natural language with precision, including nested constructs. The selection model only runs when triggered by these keywords; all other utterances go straight to the main router. Code modifications require a selection (either manual or set by a prior "select" command).
 

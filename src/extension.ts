@@ -326,6 +326,39 @@ function writeContextFile(): string {
 
   const sections: string[] = [];
 
+  // Editor state (cursor, selection, filename)
+  const editor = vscode.window.activeTextEditor;
+  if (editor) {
+    sections.push('=== Editor State ===');
+    const fileName = editor.document.fileName.split(/[\\/]/).pop() || editor.document.fileName;
+    const fullPath = editor.document.fileName;
+    sections.push(`File: ${fileName} (${fullPath})`);
+    sections.push(`Language: ${editor.document.languageId}`);
+    sections.push(`Total lines: ${editor.document.lineCount}`);
+    const pos = editor.selection.active;
+    sections.push(`Cursor: line ${pos.line + 1}, column ${pos.character + 1}`);
+    sections.push(`Line text: ${editor.document.lineAt(pos.line).text}`);
+    if (!editor.selection.isEmpty) {
+      const sel = editor.selection;
+      sections.push(`Selection: lines ${sel.start.line + 1}–${sel.end.line + 1}`);
+      const selectedText = editor.document.getText(sel);
+      const MAX_SEL = 2000;
+      if (selectedText.length > MAX_SEL) {
+        sections.push(`Selected text (truncated to ${MAX_SEL} chars):`);
+        sections.push(selectedText.slice(0, MAX_SEL) + '\n...[truncated]');
+      } else {
+        sections.push('Selected text:');
+        sections.push(selectedText);
+      }
+    } else {
+      sections.push('Selection: (none)');
+    }
+  } else {
+    sections.push('=== Editor State ===');
+    sections.push('(No active editor)');
+  }
+  sections.push('');
+
   // Activity log
   const logs = sidebar?.getLogs() || [];
   if (logs.length > 0) {
@@ -380,12 +413,12 @@ function buildAgentPrompt(transcript: string): string {
 
   if (!__agentContextSent) {
     __agentContextSent = true;
-    return transcript + '\n\n' +
-      'This prompt was sent by Mantra, a VS Code voice-coding extension that listens to the ' +
-      'user\'s voice and routes their speech to you. The text above is exactly what the user said ' +
+    return 'This prompt was sent by Mantra, a VS Code voice-coding extension that listens to the ' +
+      'user\'s voice and routes their speech to you. The text below is exactly what the user said ' +
       '(via speech-to-text). Treat it as a natural-language request and act on it.\n' +
       `For context (activity log, terminal history), see: ${ctxFile}\n` +
-      'This file is updated before every message — re-read it each time you receive a new prompt from Mantra.';
+      'This file is updated before every message — re-read it each time you receive a new prompt from Mantra.\n\n' +
+      transcript;
   } else {
     // Follow-ups: just send the raw transcript. The context file is still updated
     // but we don't remind the agent — it was told to re-check on the first message.
