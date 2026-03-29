@@ -484,52 +484,35 @@ function buildRouterSystemPrompt({ hasAgent = true, hasSelection = false } = {})
 // -- Selection model tests --
 
 const selectionTests = [
+  // --- Code edits → full (modification is handled by router, not selection model) ---
   {
-    name: 'switch-conversion-elif',
+    name: 'switch-conversion-full',
     utterance: 'make this a switch statement',
-    cursorLine: 18, // inside "elif temp < 0" branch
+    cursorLine: 18,
     file: SAMPLE_FILES.pythonIfElse,
     validate: (raw) => {
-      const m = raw.trim().toLowerCase().match(/^(select|range)\s+(\d+)\s+(\d+)/);
-      if (!m) return { pass: false, detail: `Expected range, got: ${raw.slice(0, 60)}` };
-      const [, action, start, end] = m;
-      // Must cover entire if/elif/else chain (lines 11-36)
-      return {
-        pass: action === 'range' && +start <= 11 && +end >= 36,
-        detail: `${action} ${start} ${end} (expected range covering ~11-36)`,
-      };
+      const trimmed = raw.trim().toLowerCase();
+      return { pass: trimmed === 'full', detail: trimmed };
     },
   },
   {
-    name: 'add-docstring-method',
+    name: 'add-docstring-full',
     utterance: 'add a docstring to this function',
-    cursorLine: 21, // inside make_move body
+    cursorLine: 21,
     file: SAMPLE_FILES.pythonClass,
     validate: (raw) => {
-      const m = raw.trim().toLowerCase().match(/^(select|range)\s+(\d+)\s+(\d+)/);
-      if (!m) return { pass: false, detail: `Expected range, got: ${raw.slice(0, 60)}` };
-      const [, action, start, end] = m;
-      // make_move spans lines 16-23. Allow ±1 tolerance for LLM nondeterminism.
-      return {
-        pass: action === 'range' && +start <= 17 && +start >= 15 && +end >= 22 && +end <= 24,
-        detail: `${action} ${start} ${end} (expected range covering ~16-23)`,
-      };
+      const trimmed = raw.trim().toLowerCase();
+      return { pass: trimmed === 'full', detail: trimmed };
     },
   },
   {
-    name: 'rename-variable-init',
+    name: 'rename-variable-full',
     utterance: 'rename this variable',
-    cursorLine: 6, // self.board = ... (line 6)
+    cursorLine: 6,
     file: SAMPLE_FILES.pythonClass,
     validate: (raw) => {
-      const m = raw.trim().toLowerCase().match(/^(select|range)\s+(\d+)\s+(\d+)/);
-      if (!m) return { pass: false, detail: `Expected range, got: ${raw.slice(0, 60)}` };
-      const [, action, start, end] = m;
-      // __init__ spans lines 4-8. Must cover cursor line 6 and be a reasonable scope.
-      return {
-        pass: action === 'range' && +start <= 6 && +end >= 7 && (+end - +start) >= 2,
-        detail: `${action} ${start} ${end} (expected range covering __init__ around line 6)`,
-      };
+      const trimmed = raw.trim().toLowerCase();
+      return { pass: trimmed === 'full', detail: trimmed };
     },
   },
   {
@@ -539,217 +522,161 @@ const selectionTests = [
     file: SAMPLE_FILES.pythonClass,
     validate: (raw) => {
       const trimmed = raw.trim().toLowerCase();
-      return {
-        pass: trimmed === 'full',
-        detail: trimmed,
-      };
+      return { pass: trimmed === 'full', detail: trimmed };
     },
   },
+  // --- Selection commands → select (pure selection of code constructs) ---
   {
     name: 'select-entire-class',
     utterance: 'select the entire class',
     cursorLine: 20,
     file: SAMPLE_FILES.pythonClass,
     validate: (raw) => {
-      const m = raw.trim().toLowerCase().match(/^(select|range)\s+(\d+)\s+(\d+)/);
+      const m = raw.trim().toLowerCase().match(/^select\s+(\d+)\s+(\d+)/);
       if (!m) return { pass: false, detail: `Expected select, got: ${raw.slice(0, 60)}` };
-      const [, action, start, end] = m;
+      const [, start, end] = m;
       // GameBoard class spans lines 1-47
       return {
-        pass: action === 'select' && +start <= 1 && +end >= 47,
-        detail: `${action} ${start} ${end} (expected select covering ~1-47)`,
+        pass: +start <= 1 && +end >= 47,
+        detail: `select ${start} ${end} (expected select covering ~1-47)`,
       };
     },
   },
+  // --- More code edits → full ---
   {
-    name: 'code-dictation-assignment',
+    name: 'code-dictation-full',
     utterance: 'x equals 5',
-    cursorLine: 25, // mid-function
+    cursorLine: 25,
     file: SAMPLE_FILES.jsModule,
     validate: (raw) => {
-      const m = raw.trim().toLowerCase().match(/^(select|range)\s+(\d+)\s+(\d+)/);
-      if (!m) return { pass: false, detail: `Expected range, got: ${raw.slice(0, 60)}` };
-      const [, action, start, end] = m;
-      // Should be range around cursor (within ~15 lines)
-      return {
-        pass: action === 'range' && +start >= 15 && +start <= 30 && +end >= 25 && +end <= 40,
-        detail: `${action} ${start} ${end} (expected range around line 25)`,
-      };
+      const trimmed = raw.trim().toLowerCase();
+      return { pass: trimmed === 'full', detail: trimmed };
     },
   },
   {
-    name: 'add-import-range-or-full',
+    name: 'add-import-full',
     utterance: 'add an import for lodash',
     cursorLine: 2,
     file: SAMPLE_FILES.jsModule,
     validate: (raw) => {
       const trimmed = raw.trim().toLowerCase();
-      // Either full or a range covering the imports area is acceptable
-      if (trimmed === 'full') return { pass: true, detail: 'full' };
-      const m = trimmed.match(/^range\s+(\d+)\s+(\d+)/);
-      if (m && +m[1] <= 3 && +m[2] <= 7) return { pass: true, detail: `range ${m[1]} ${m[2]} (imports area)` };
-      return { pass: false, detail: trimmed };
+      return { pass: trimmed === 'full', detail: trimmed };
     },
   },
   {
-    name: 'change-loop-type',
+    name: 'change-loop-full',
     utterance: 'change this to a while loop',
-    cursorLine: 42, // inside "for entry in data" in format_report
+    cursorLine: 42,
     file: SAMPLE_FILES.pythonIfElse,
     validate: (raw) => {
-      const m = raw.trim().toLowerCase().match(/^(select|range)\s+(\d+)\s+(\d+)/);
-      if (!m) return { pass: false, detail: `Expected range, got: ${raw.slice(0, 60)}` };
-      const [, action, start, end] = m;
-      // format_report spans ~39-44, loop is within
-      return {
-        pass: action === 'range' && +start <= 42 && +end >= 43,
-        detail: `${action} ${start} ${end} (expected range covering loop ~41-44)`,
-      };
+      const trimmed = raw.trim().toLowerCase();
+      return { pass: trimmed === 'full', detail: trimmed };
     },
   },
   {
-    name: 'wrap-try-catch',
+    name: 'wrap-try-catch-full',
     utterance: 'wrap this in a try catch',
-    cursorLine: 26, // inside processActivityFile
+    cursorLine: 26,
     file: SAMPLE_FILES.jsModule,
     validate: (raw) => {
-      const m = raw.trim().toLowerCase().match(/^(select|range)\s+(\d+)\s+(\d+)/);
-      if (!m) return { pass: false, detail: `Expected range, got: ${raw.slice(0, 60)}` };
-      const [, action, start, end] = m;
-      // processActivityFile spans lines 22-30. Allow ±1 tolerance.
-      return {
-        pass: action === 'range' && +start <= 23 && +end >= 30,
-        detail: `${action} ${start} ${end} (expected range covering ~22-30)`,
-      };
+      const trimmed = raw.trim().toLowerCase();
+      return { pass: trimmed === 'full', detail: trimmed };
     },
   },
   {
-    name: 'comment-function',
+    name: 'comment-function-full',
     utterance: 'comment out this function',
     cursorLine: 27,
     file: SAMPLE_FILES.jsModule,
     validate: (raw) => {
-      const m = raw.trim().toLowerCase().match(/^(select|range)\s+(\d+)\s+(\d+)/);
-      if (!m) return { pass: false, detail: `Expected select/range, got: ${raw.slice(0, 60)}` };
-      const [, action, start, end] = m;
-      // processActivityFile spans lines 22-30
-      return {
-        pass: (action === 'select' || action === 'range') && +start <= 22 && +end >= 30,
-        detail: `${action} ${start} ${end} (expected covering ~22-30)`,
-      };
+      const trimmed = raw.trim().toLowerCase();
+      // "comment out" may be interpreted as full (editor command) or select (highlight first)
+      if (trimmed === 'full') return { pass: true, detail: 'full' };
+      const m = trimmed.match(/^select\s+(\d+)\s+(\d+)/);
+      if (m && +m[1] <= 22 && +m[2] >= 30) return { pass: true, detail: `select ${m[1]} ${m[2]} (select interpretation)` };
+      return { pass: false, detail: trimmed };
     },
   },
   {
-    name: 'add-timeout-param',
+    name: 'add-timeout-full',
     utterance: 'add a timeout parameter to this method',
-    cursorLine: 22, // inside createUser body
+    cursorLine: 22,
     file: SAMPLE_FILES.tsService,
     validate: (raw) => {
-      const m = raw.trim().toLowerCase().match(/^(select|range)\s+(\d+)\s+(\d+)/);
-      if (!m) return { pass: false, detail: `Expected range, got: ${raw.slice(0, 60)}` };
-      const [, action, start, end] = m;
-      // Must cover cursor line 22 and be a decent scope (not just 1 line)
-      return {
-        pass: action === 'range' && +start <= 22 && +end >= 22 && (+end - +start) >= 4,
-        detail: `${action} ${start} ${end} (expected range covering method around line 22)`,
-      };
+      const trimmed = raw.trim().toLowerCase();
+      return { pass: trimmed === 'full', detail: trimmed };
     },
   },
+  // --- Selection commands → select ---
   {
     name: 'select-interface',
     utterance: 'select this interface',
     cursorLine: 3, // inside UserProfile interface
     file: SAMPLE_FILES.tsService,
     validate: (raw) => {
-      const m = raw.trim().toLowerCase().match(/^(select|range)\s+(\d+)\s+(\d+)/);
+      const m = raw.trim().toLowerCase().match(/^select\s+(\d+)\s+(\d+)/);
       if (!m) return { pass: false, detail: `Expected select, got: ${raw.slice(0, 60)}` };
-      const [, action, start, end] = m;
+      const [, start, end] = m;
       // UserProfile interface spans lines 1-7
       return {
-        pass: action === 'select' && +start <= 1 && +end >= 7,
-        detail: `${action} ${start} ${end} (expected select covering ~1-7)`,
+        pass: +start <= 1 && +end >= 7,
+        detail: `select ${start} ${end} (expected select covering ~1-7)`,
       };
     },
   },
+  // --- More code edits → full ---
   {
-    name: 'add-return-type',
+    name: 'add-return-type-full',
     utterance: 'add a return type to this method',
-    cursorLine: 38, // inside updateUser
+    cursorLine: 38,
     file: SAMPLE_FILES.tsService,
     validate: (raw) => {
-      const m = raw.trim().toLowerCase().match(/^(select|range)\s+(\d+)\s+(\d+)/);
-      if (!m) return { pass: false, detail: `Expected range, got: ${raw.slice(0, 60)}` };
-      const [, action, start, end] = m;
-      // updateUser spans lines 35-42. Must at least cover the cursor line.
-      return {
-        pass: action === 'range' && +start <= 38 && +end >= 38 && (+end - +start) >= 3,
-        detail: `${action} ${start} ${end} (expected range covering method around line 38)`,
-      };
+      const trimmed = raw.trim().toLowerCase();
+      return { pass: trimmed === 'full', detail: trimmed };
     },
   },
   {
-    name: 'delete-method',
+    name: 'delete-method-full',
     utterance: 'delete this method',
-    cursorLine: 45, // inside deleteUser
+    cursorLine: 45,
     file: SAMPLE_FILES.tsService,
     validate: (raw) => {
-      const m = raw.trim().toLowerCase().match(/^(select|range)\s+(\d+)\s+(\d+)/);
-      if (!m) return { pass: false, detail: `Expected select/range, got: ${raw.slice(0, 60)}` };
-      const [, action, start, end] = m;
-      // deleteUser spans lines 44-46
-      return {
-        pass: (action === 'select' || action === 'range') && +start <= 44 && +end >= 46,
-        detail: `${action} ${start} ${end} (expected covering ~44-46)`,
-      };
+      const trimmed = raw.trim().toLowerCase();
+      // "delete" may be interpreted as full (editor command) or select (highlight to delete)
+      if (trimmed === 'full') return { pass: true, detail: 'full' };
+      const m = trimmed.match(/^select\s+(\d+)\s+(\d+)/);
+      if (m && +m[1] <= 44 && +m[2] >= 46) return { pass: true, detail: `select ${m[1]} ${m[2]} (select interpretation)` };
+      return { pass: false, detail: trimmed };
     },
   },
   {
-    name: 'code-dictation-loop',
+    name: 'code-dictation-loop-full',
     utterance: 'for i in range len nums',
-    cursorLine: 22, // inside make_move
+    cursorLine: 22,
     file: SAMPLE_FILES.pythonClass,
     validate: (raw) => {
-      const m = raw.trim().toLowerCase().match(/^(select|range)\s+(\d+)\s+(\d+)/);
-      if (!m) return { pass: false, detail: `Expected range, got: ${raw.slice(0, 60)}` };
-      const [, action, start, end] = m;
-      // Should be range around cursor
-      return {
-        pass: action === 'range' && +start >= 12 && +start <= 27 && +end >= 22 && +end <= 35,
-        detail: `${action} ${start} ${end} (expected range around line 22)`,
-      };
+      const trimmed = raw.trim().toLowerCase();
+      return { pass: trimmed === 'full', detail: trimmed };
     },
   },
   {
-    name: 'make-async',
+    name: 'make-async-full',
     utterance: 'make this function async',
     cursorLine: 26,
     file: SAMPLE_FILES.jsModule,
     validate: (raw) => {
-      const m = raw.trim().toLowerCase().match(/^(select|range)\s+(\d+)\s+(\d+)/);
-      if (!m) return { pass: false, detail: `Expected range, got: ${raw.slice(0, 60)}` };
-      const [, action, start, end] = m;
-      // Must be a range covering some function containing line 26
-      // processActivityFile (22-30) or handleError (32-39) — any function scope is ok
-      return {
-        pass: action === 'range' && +start <= 26 && +end >= 26 && (+end - +start) >= 4,
-        detail: `${action} ${start} ${end} (expected range covering a function around line 26)`,
-      };
+      const trimmed = raw.trim().toLowerCase();
+      return { pass: trimmed === 'full', detail: trimmed };
     },
   },
   {
-    name: 'add-error-handling',
+    name: 'add-error-handling-full',
     utterance: 'add error handling here',
     cursorLine: 26,
     file: SAMPLE_FILES.jsModule,
     validate: (raw) => {
-      const m = raw.trim().toLowerCase().match(/^(select|range)\s+(\d+)\s+(\d+)/);
-      if (!m) return { pass: false, detail: `Expected range, got: ${raw.slice(0, 60)}` };
-      const [, action, start, end] = m;
-      // processActivityFile spans lines 22-30
-      return {
-        pass: action === 'range' && +start <= 22 && +end >= 30,
-        detail: `${action} ${start} ${end} (expected range covering ~22-30)`,
-      };
+      const trimmed = raw.trim().toLowerCase();
+      return { pass: trimmed === 'full', detail: trimmed };
     },
   },
   {
@@ -785,13 +712,128 @@ const selectionTests = [
     file: SAMPLE_FILES.pythonClass,
     validate: (raw) => {
       const trimmed = raw.trim().toLowerCase();
-      // "select lines 10 to 20" — selection model may interpret this literally as select 10 20
-      // OR return full (since it's a command). Both are valid — in practice handleCommand
-      // catches this before the selection model runs.
+      // "select lines 10 to 20" — may be interpreted literally or as full (editor command)
       if (trimmed === 'full') return { pass: true, detail: 'full' };
       const m = trimmed.match(/^select\s+10\s+20/);
       if (m) return { pass: true, detail: 'select 10 20 (literal interpretation)' };
       return { pass: false, detail: trimmed };
+    },
+  },
+  // --- Additional selection tests: robust construct selection ---
+  {
+    name: 'select-function-from-body',
+    utterance: 'select this function',
+    cursorLine: 21, // inside make_move body (line 21 is self.move_count += 1)
+    file: SAMPLE_FILES.pythonClass,
+    validate: (raw) => {
+      const m = raw.trim().toLowerCase().match(/^select\s+(\d+)\s+(\d+)/);
+      if (!m) return { pass: false, detail: `Expected select, got: ${raw.slice(0, 60)}` };
+      const [, start, end] = m;
+      // make_move spans lines 16-22. MUST include the def line (16), not start inside the body.
+      return {
+        pass: +start <= 16 && +end >= 22,
+        detail: `select ${start} ${end} (expected select covering ~16-22, must include def header)`,
+      };
+    },
+  },
+  {
+    name: 'select-method-from-deep-body',
+    utterance: 'select the function',
+    cursorLine: 30, // inside get_winner body
+    file: SAMPLE_FILES.pythonClass,
+    validate: (raw) => {
+      const m = raw.trim().toLowerCase().match(/^select\s+(\d+)\s+(\d+)/);
+      if (!m) return { pass: false, detail: `Expected select, got: ${raw.slice(0, 60)}` };
+      const [, start, end] = m;
+      // get_winner spans lines 30-41. Must include the def line (30).
+      return {
+        pass: +start <= 30 && +end >= 40,
+        detail: `select ${start} ${end} (expected select covering get_winner ~30-41)`,
+      };
+    },
+  },
+  {
+    name: 'select-js-function-from-body',
+    utterance: 'select the function',
+    cursorLine: 26, // inside processActivityFile body
+    file: SAMPLE_FILES.jsModule,
+    validate: (raw) => {
+      const m = raw.trim().toLowerCase().match(/^select\s+(\d+)\s+(\d+)/);
+      if (!m) return { pass: false, detail: `Expected select, got: ${raw.slice(0, 60)}` };
+      const [, start, end] = m;
+      // processActivityFile spans lines 22-30. Must include function header (22).
+      return {
+        pass: +start <= 22 && +end >= 29,
+        detail: `select ${start} ${end} (expected select covering processActivityFile ~22-30)`,
+      };
+    },
+  },
+  {
+    name: 'select-ts-method-from-body',
+    utterance: 'select this method',
+    cursorLine: 38, // inside updateUser body
+    file: SAMPLE_FILES.tsService,
+    validate: (raw) => {
+      const m = raw.trim().toLowerCase().match(/^select\s+(\d+)\s+(\d+)/);
+      if (!m) return { pass: false, detail: `Expected select, got: ${raw.slice(0, 60)}` };
+      const [, start, end] = m;
+      // updateUser spans lines 35-42. Must include method signature (35).
+      return {
+        pass: +start <= 35 && +end >= 41,
+        detail: `select ${start} ${end} (expected select covering updateUser ~35-42)`,
+      };
+    },
+  },
+  {
+    name: 'select-if-chain',
+    utterance: 'select this if statement',
+    cursorLine: 18, // inside elif branch
+    file: SAMPLE_FILES.pythonIfElse,
+    validate: (raw) => {
+      const m = raw.trim().toLowerCase().match(/^select\s+(\d+)\s+(\d+)/);
+      if (!m) return { pass: false, detail: `Expected select, got: ${raw.slice(0, 60)}` };
+      const [, start, end] = m;
+      // if/elif/else chain spans lines 11-36
+      return {
+        pass: +start <= 11 && +end >= 36,
+        detail: `select ${start} ${end} (expected select covering if/elif/else ~11-36)`,
+      };
+    },
+  },
+  {
+    name: 'select-the-loop',
+    utterance: 'select the loop',
+    cursorLine: 46, // inside for loop body in format_report (line 46 = lines.append)
+    file: SAMPLE_FILES.pythonIfElse,
+    validate: (raw) => {
+      const m = raw.trim().toLowerCase().match(/^select\s+(\d+)\s+(\d+)/);
+      if (!m) return { pass: false, detail: `Expected select, got: ${raw.slice(0, 60)}` };
+      const [, start, end] = m;
+      // The nearest loop is: for entry in data (lines 45-46).
+      // The other loop is: for t in temps (lines 51-52).
+      // Either is acceptable, though the cursor is inside the first.
+      const coversNearLoop = +start <= 45 && +end >= 46;
+      const coversOtherLoop = +start <= 51 && +end >= 52;
+      return {
+        pass: coversNearLoop || coversOtherLoop,
+        detail: `select ${start} ${end} (expected a loop selection)`,
+      };
+    },
+  },
+  {
+    name: 'highlight-constructor',
+    utterance: 'highlight the constructor',
+    cursorLine: 6, // inside __init__ body
+    file: SAMPLE_FILES.pythonClass,
+    validate: (raw) => {
+      const m = raw.trim().toLowerCase().match(/^select\s+(\d+)\s+(\d+)/);
+      if (!m) return { pass: false, detail: `Expected select, got: ${raw.slice(0, 60)}` };
+      const [, start, end] = m;
+      // __init__ spans lines 4-9. Must include the def line (4).
+      return {
+        pass: +start <= 4 && +end >= 8,
+        detail: `select ${start} ${end} (expected select covering __init__ ~4-9)`,
+      };
     },
   },
 ];
