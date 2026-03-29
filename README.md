@@ -352,7 +352,7 @@ This is useful for low-latency command execution without any API calls beyond sp
 
 When "Send Context to Agent" is enabled (the default), Mantra writes the activity log and terminal history to a context file before each agent prompt. The first message to the agent includes an explanation of what Mantra is and a reference to the context file. Follow-up messages include a shorter reminder to re-check the file for updated context.
 
-**Selection model:** Before routing, Mantra runs a lightweight LLM call to handle pure selection commands — "select this function", "select the entire class", "select these if statements". This lets you say what you want to select in natural language instead of specifying exact line numbers. The selection model is only used for explicit selection requests; code modifications require you to manually select the target text first.
+**Selection model:** When the transcript contains a selection keyword ("select", "highlight", "lines X to Y"), Mantra runs a separate lightweight LLM call to determine the exact lines to select — "select the inner for loop", "select this function", "highlight the try block". This lets you say what you want to select in natural language with precision, including nested constructs. The selection model only runs when triggered by these keywords; all other utterances go straight to the main router. Code modifications require a selection (either manual or set by a prior "select" command).
 
 The router and selection model prompts are visible and editable in the sidebar panel.
 
@@ -513,7 +513,7 @@ GROQ_API_KEY=gsk_... npm run test:llm
 LLM_PROVIDER=cerebras CEREBRAS_API_KEY=csk_... npm run test:llm
 ```
 
-The test harness (`test-llm.mjs`) makes real API calls using the exact prompts from `package.json` against realistic code samples. It covers 69 scenarios: 36 selection model tests (including 9 nested construct precision tests), 12 semantic go-to tests, and 21 router tests (across all 4 routing modes: with/without selection, with/without agent).
+The test harness (`test-llm.mjs`) makes real API calls using the exact prompts from `package.json` against realistic code samples. It covers 52 scenarios: 19 selection model tests (including 9 nested construct precision tests), 12 semantic go-to tests, and 21 router tests (across all 4 routing modes: with/without selection, with/without agent).
 
 ---
 

@@ -551,49 +551,9 @@ function buildRouterSystemPrompt({ hasAgent = true, hasSelection = false } = {})
 
 // -- Selection model tests --
 
+// The selection model only runs when the transcript contains selection keywords
+// (select/highlight/mark/grab/lines). All tests below use selection utterances.
 const selectionTests = [
-  // --- Code edits → full (modification is handled by router, not selection model) ---
-  {
-    name: 'switch-conversion-full',
-    utterance: 'make this a switch statement',
-    cursorLine: 18,
-    file: SAMPLE_FILES.pythonIfElse,
-    validate: (raw) => {
-      const trimmed = raw.trim().toLowerCase();
-      return { pass: trimmed === 'full', detail: trimmed };
-    },
-  },
-  {
-    name: 'add-docstring-full',
-    utterance: 'add a docstring to this function',
-    cursorLine: 21,
-    file: SAMPLE_FILES.pythonClass,
-    validate: (raw) => {
-      const trimmed = raw.trim().toLowerCase();
-      return { pass: trimmed === 'full', detail: trimmed };
-    },
-  },
-  {
-    name: 'rename-variable-full',
-    utterance: 'rename this variable',
-    cursorLine: 6,
-    file: SAMPLE_FILES.pythonClass,
-    validate: (raw) => {
-      const trimmed = raw.trim().toLowerCase();
-      return { pass: trimmed === 'full', detail: trimmed };
-    },
-  },
-  {
-    name: 'delete-line-full',
-    utterance: 'delete this line',
-    cursorLine: 15,
-    file: SAMPLE_FILES.pythonClass,
-    validate: (raw) => {
-      const trimmed = raw.trim().toLowerCase();
-      return { pass: trimmed === 'full', detail: trimmed };
-    },
-  },
-  // --- Selection commands → select (pure selection of code constructs) ---
   {
     name: 'select-entire-class',
     utterance: 'select the entire class',
@@ -610,68 +570,6 @@ const selectionTests = [
       };
     },
   },
-  // --- More code edits → full ---
-  {
-    name: 'code-dictation-full',
-    utterance: 'x equals 5',
-    cursorLine: 25,
-    file: SAMPLE_FILES.jsModule,
-    validate: (raw) => {
-      const trimmed = raw.trim().toLowerCase();
-      return { pass: trimmed === 'full', detail: trimmed };
-    },
-  },
-  {
-    name: 'add-import-full',
-    utterance: 'add an import for lodash',
-    cursorLine: 2,
-    file: SAMPLE_FILES.jsModule,
-    validate: (raw) => {
-      const trimmed = raw.trim().toLowerCase();
-      return { pass: trimmed === 'full', detail: trimmed };
-    },
-  },
-  {
-    name: 'change-loop-full',
-    utterance: 'change this to a while loop',
-    cursorLine: 42,
-    file: SAMPLE_FILES.pythonIfElse,
-    validate: (raw) => {
-      const trimmed = raw.trim().toLowerCase();
-      return { pass: trimmed === 'full', detail: trimmed };
-    },
-  },
-  {
-    name: 'wrap-try-catch-full',
-    utterance: 'wrap this in a try catch',
-    cursorLine: 26,
-    file: SAMPLE_FILES.jsModule,
-    validate: (raw) => {
-      const trimmed = raw.trim().toLowerCase();
-      return { pass: trimmed === 'full', detail: trimmed };
-    },
-  },
-  {
-    name: 'comment-function-full',
-    utterance: 'comment out this function',
-    cursorLine: 27,
-    file: SAMPLE_FILES.jsModule,
-    validate: (raw) => {
-      const trimmed = raw.trim().toLowerCase();
-      return { pass: trimmed === 'full', detail: trimmed };
-    },
-  },
-  {
-    name: 'add-timeout-full',
-    utterance: 'add a timeout parameter to this method',
-    cursorLine: 22,
-    file: SAMPLE_FILES.tsService,
-    validate: (raw) => {
-      const trimmed = raw.trim().toLowerCase();
-      return { pass: trimmed === 'full', detail: trimmed };
-    },
-  },
-  // --- Selection commands → select ---
   {
     name: 'select-interface',
     utterance: 'select this interface',
@@ -688,98 +586,20 @@ const selectionTests = [
       };
     },
   },
-  // --- More code edits → full ---
-  {
-    name: 'add-return-type-full',
-    utterance: 'add a return type to this method',
-    cursorLine: 38,
-    file: SAMPLE_FILES.tsService,
-    validate: (raw) => {
-      const trimmed = raw.trim().toLowerCase();
-      return { pass: trimmed === 'full', detail: trimmed };
-    },
-  },
-  {
-    name: 'delete-method-full',
-    utterance: 'delete this method',
-    cursorLine: 45,
-    file: SAMPLE_FILES.tsService,
-    validate: (raw) => {
-      const trimmed = raw.trim().toLowerCase();
-      return { pass: trimmed === 'full', detail: trimmed };
-    },
-  },
-  {
-    name: 'code-dictation-loop-full',
-    utterance: 'for i in range len nums',
-    cursorLine: 22,
-    file: SAMPLE_FILES.pythonClass,
-    validate: (raw) => {
-      const trimmed = raw.trim().toLowerCase();
-      return { pass: trimmed === 'full', detail: trimmed };
-    },
-  },
-  {
-    name: 'make-async-full',
-    utterance: 'make this function async',
-    cursorLine: 26,
-    file: SAMPLE_FILES.jsModule,
-    validate: (raw) => {
-      const trimmed = raw.trim().toLowerCase();
-      return { pass: trimmed === 'full', detail: trimmed };
-    },
-  },
-  {
-    name: 'add-error-handling-full',
-    utterance: 'add error handling here',
-    cursorLine: 26,
-    file: SAMPLE_FILES.jsModule,
-    validate: (raw) => {
-      const trimmed = raw.trim().toLowerCase();
-      return { pass: trimmed === 'full', detail: trimmed };
-    },
-  },
-  {
-    name: 'run-file-full',
-    utterance: 'run this file',
-    cursorLine: 10,
-    file: SAMPLE_FILES.pythonClass,
-    validate: (raw) => {
-      const trimmed = raw.trim().toLowerCase();
-      return {
-        pass: trimmed === 'full',
-        detail: trimmed,
-      };
-    },
-  },
-  {
-    name: 'question-full',
-    utterance: 'what does this function do',
-    cursorLine: 20,
-    file: SAMPLE_FILES.pythonClass,
-    validate: (raw) => {
-      const trimmed = raw.trim().toLowerCase();
-      return {
-        pass: trimmed === 'full',
-        detail: trimmed,
-      };
-    },
-  },
   {
     name: 'select-lines-command',
     utterance: 'select lines 10 to 20',
     cursorLine: 15,
     file: SAMPLE_FILES.pythonClass,
     validate: (raw) => {
-      const trimmed = raw.trim().toLowerCase();
-      // "select lines 10 to 20" — may be interpreted literally or as full (editor command)
-      if (trimmed === 'full') return { pass: true, detail: 'full' };
-      const m = trimmed.match(/^select\s+10\s+20/);
-      if (m) return { pass: true, detail: 'select 10 20 (literal interpretation)' };
-      return { pass: false, detail: trimmed };
+      const m = raw.trim().toLowerCase().match(/^select\s+(\d+)\s+(\d+)/);
+      if (!m) return { pass: false, detail: `Expected select, got: ${raw.slice(0, 60)}` };
+      return {
+        pass: +m[1] === 10 && +m[2] === 20,
+        detail: `select ${m[1]} ${m[2]} (expected select 10 20)`,
+      };
     },
   },
-  // --- Additional selection tests: robust construct selection ---
   {
     name: 'select-function-from-body',
     utterance: 'select this function',

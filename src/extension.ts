@@ -1653,13 +1653,13 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 
           if (!(await warnSensitiveFileAndMaybeProceed())) return;
 
-          // --- selection model: handle pure selection commands ---
-          // Code edits (modification) only happen when the user has MANUALLY
-          // selected text. The selection model still runs for pure selection
-          // commands (e.g. "select this function") but no longer auto-selects
-          // ranges for scoped modification.
+          // --- selection model: only runs when user explicitly asks to select ---
+          // Triggered by keywords like "select", "highlight", "lines X to Y", etc.
+          // Otherwise, skip straight to the main router (decide()).
           const hasPreExistingSelection = !!(editor && !editor.selection.isEmpty);
-          if (editor && editor.selection.isEmpty) {
+          const isSelectionRequest = /\b(select|highlight|mark|grab)\b/i.test(transcript)
+            || /\blines?\s+\d+/i.test(transcript);
+          if (editor && editor.selection.isEmpty && isSelectionRequest) {
             try {
               const scope = await model!.selectRange(transcript, {
                 editor,
@@ -1677,13 +1677,9 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
                 pushLog('command', `Selected lines ${scope.startLine}–${scope.endLine}`);
                 return;
               }
-              // 'range' and 'full' both proceed to decide() without setting selection.
-              // Modification is only available when the user has manually selected text.
-              if (scope.action === 'range') {
-                console.log('[Mantra] Selection model returned range — ignoring (no pre-existing selection, modification disabled)');
-              }
+              // Non-select result — fall through to decide()
             } catch (err) {
-              console.warn('[Mantra] Selection model error (proceeding):', err);
+              console.warn('[Mantra] Selection model error (proceeding to router):', err);
             }
           } else if (hasPreExistingSelection) {
             console.log('[Mantra] Pre-existing selection detected — SELECTION MODE will be active');
