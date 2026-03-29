@@ -341,6 +341,74 @@ class UserService {
 
 export { UserService, UserProfile, CreateUserInput };`,
   },
+
+  // Sample with nested constructs for precision selection testing
+  pythonNested: {
+    filename: 'matrix.py',
+    language: 'python',
+    content: `def process_matrix(matrix):
+    """Process a matrix with nested loops."""
+    result = []
+    for i, row in enumerate(matrix):
+        row_sum = 0
+        for j, val in enumerate(row):
+            if val > 0:
+                row_sum += val
+            else:
+                row_sum -= val
+        result.append(row_sum)
+    return result
+
+def find_pairs(nums, target):
+    """Find all pairs that sum to target."""
+    pairs = []
+    for i in range(len(nums)):
+        for j in range(i + 1, len(nums)):
+            if nums[i] + nums[j] == target:
+                pairs.append((nums[i], nums[j]))
+    return pairs
+
+def nested_conditionals(data):
+    """Process data with nested conditionals."""
+    output = []
+    for item in data:
+        if item.get("type") == "A":
+            if item.get("priority") == "high":
+                output.append(f"URGENT: {item['name']}")
+            elif item.get("priority") == "medium":
+                output.append(f"normal: {item['name']}")
+            else:
+                output.append(f"low: {item['name']}")
+        elif item.get("type") == "B":
+            for sub in item.get("children", []):
+                if sub.get("active"):
+                    output.append(f"active: {sub['name']}")
+        else:
+            output.append(f"unknown: {item}")
+    return output
+
+class DataProcessor:
+    def __init__(self, config):
+        self.config = config
+        self.results = []
+
+    def run(self, datasets):
+        for ds in datasets:
+            try:
+                for record in ds.get("records", []):
+                    if record.get("valid"):
+                        self.results.append(self._transform(record))
+                    else:
+                        if self.config.get("strict"):
+                            raise ValueError(f"Invalid record: {record}")
+                        else:
+                            continue
+            except Exception as e:
+                print(f"Error processing {ds['name']}: {e}")
+
+    def _transform(self, record):
+        return {k: v.strip() if isinstance(v, str) else v for k, v in record.items()}`,
+  },
 };
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
@@ -590,11 +658,7 @@ const selectionTests = [
     file: SAMPLE_FILES.jsModule,
     validate: (raw) => {
       const trimmed = raw.trim().toLowerCase();
-      // "comment out" may be interpreted as full (editor command) or select (highlight first)
-      if (trimmed === 'full') return { pass: true, detail: 'full' };
-      const m = trimmed.match(/^select\s+(\d+)\s+(\d+)/);
-      if (m && +m[1] <= 22 && +m[2] >= 30) return { pass: true, detail: `select ${m[1]} ${m[2]} (select interpretation)` };
-      return { pass: false, detail: trimmed };
+      return { pass: trimmed === 'full', detail: trimmed };
     },
   },
   {
@@ -642,11 +706,7 @@ const selectionTests = [
     file: SAMPLE_FILES.tsService,
     validate: (raw) => {
       const trimmed = raw.trim().toLowerCase();
-      // "delete" may be interpreted as full (editor command) or select (highlight to delete)
-      if (trimmed === 'full') return { pass: true, detail: 'full' };
-      const m = trimmed.match(/^select\s+(\d+)\s+(\d+)/);
-      if (m && +m[1] <= 44 && +m[2] >= 46) return { pass: true, detail: `select ${m[1]} ${m[2]} (select interpretation)` };
-      return { pass: false, detail: trimmed };
+      return { pass: trimmed === 'full', detail: trimmed };
     },
   },
   {
@@ -754,14 +814,14 @@ const selectionTests = [
   },
   {
     name: 'select-js-function-from-body',
-    utterance: 'select the function',
+    utterance: 'select this function',
     cursorLine: 26, // inside processActivityFile body
     file: SAMPLE_FILES.jsModule,
     validate: (raw) => {
       const m = raw.trim().toLowerCase().match(/^select\s+(\d+)\s+(\d+)/);
       if (!m) return { pass: false, detail: `Expected select, got: ${raw.slice(0, 60)}` };
       const [, start, end] = m;
-      // processActivityFile spans lines 22-30. Must include function header (22).
+      // processActivityFile spans lines 22-30. Must include cursor line and function header.
       return {
         pass: +start <= 22 && +end >= 29,
         detail: `select ${start} ${end} (expected select covering processActivityFile ~22-30)`,
@@ -786,17 +846,17 @@ const selectionTests = [
   },
   {
     name: 'select-if-chain',
-    utterance: 'select this if statement',
+    utterance: 'select the whole if elif else chain',
     cursorLine: 18, // inside elif branch
     file: SAMPLE_FILES.pythonIfElse,
     validate: (raw) => {
       const m = raw.trim().toLowerCase().match(/^select\s+(\d+)\s+(\d+)/);
       if (!m) return { pass: false, detail: `Expected select, got: ${raw.slice(0, 60)}` };
       const [, start, end] = m;
-      // if/elif/else chain spans lines 11-36
+      // if/elif/else chain spans lines 11-38. Must start at first if.
       return {
         pass: +start <= 11 && +end >= 36,
-        detail: `select ${start} ${end} (expected select covering if/elif/else ~11-36)`,
+        detail: `select ${start} ${end} (expected select covering if/elif/else ~11-38)`,
       };
     },
   },
@@ -833,6 +893,155 @@ const selectionTests = [
       return {
         pass: +start <= 4 && +end >= 8,
         detail: `select ${start} ${end} (expected select covering __init__ ~4-9)`,
+      };
+    },
+  },
+  // --- Nested construct precision tests (pythonNested sample) ---
+  {
+    name: 'nested-inner-for-loop',
+    utterance: 'select the inner for loop',
+    cursorLine: 8, // inside inner loop body (row_sum += val)
+    file: SAMPLE_FILES.pythonNested,
+    validate: (raw) => {
+      const m = raw.trim().toLowerCase().match(/^select\s+(\d+)\s+(\d+)/);
+      if (!m) return { pass: false, detail: `Expected select, got: ${raw.slice(0, 60)}` };
+      const [, start, end] = m;
+      // Inner loop: for j, val in enumerate(row) spans lines 6-10
+      // Must NOT include outer loop header (line 4)
+      return {
+        pass: +start >= 5 && +start <= 6 && +end >= 10 && +end <= 11 && +start > 4,
+        detail: `select ${start} ${end} (expected inner loop only ~6-10, NOT outer)`,
+      };
+    },
+  },
+  {
+    name: 'nested-outer-for-loop',
+    utterance: 'select the outer for loop',
+    cursorLine: 8, // inside inner loop body
+    file: SAMPLE_FILES.pythonNested,
+    validate: (raw) => {
+      const m = raw.trim().toLowerCase().match(/^select\s+(\d+)\s+(\d+)/);
+      if (!m) return { pass: false, detail: `Expected select, got: ${raw.slice(0, 60)}` };
+      const [, start, end] = m;
+      // Outer loop: for i, row spans lines 4-11
+      return {
+        pass: +start <= 4 && +end >= 11,
+        detail: `select ${start} ${end} (expected outer loop ~4-11)`,
+      };
+    },
+  },
+  {
+    name: 'nested-inner-for-in-pairs',
+    utterance: 'select the for loop inside this one',
+    cursorLine: 19, // inside inner loop body (if nums[i]+nums[j])
+    file: SAMPLE_FILES.pythonNested,
+    validate: (raw) => {
+      const m = raw.trim().toLowerCase().match(/^select\s+(\d+)\s+(\d+)/);
+      if (!m) return { pass: false, detail: `Expected select, got: ${raw.slice(0, 60)}` };
+      const [, start, end] = m;
+      // Inner loop: for j in range(i+1,...) spans lines 18-20
+      // Must NOT include outer loop header (line 17)
+      return {
+        pass: +start >= 17 && +start <= 18 && +end >= 20 && +end <= 21 && +start > 16,
+        detail: `select ${start} ${end} (expected inner loop only ~18-20, NOT outer)`,
+      };
+    },
+  },
+  {
+    name: 'nested-inner-if-in-conditionals',
+    utterance: 'select the inner if statement',
+    cursorLine: 29, // inside priority if/elif/else (line 29 = URGENT append)
+    file: SAMPLE_FILES.pythonNested,
+    validate: (raw) => {
+      const m = raw.trim().toLowerCase().match(/^select\s+(\d+)\s+(\d+)/);
+      if (!m) return { pass: false, detail: `Expected select, got: ${raw.slice(0, 60)}` };
+      const [, start, end] = m;
+      // Inner if: priority check spans lines 28-33
+      // Must NOT include outer if (type check at line 27)
+      return {
+        pass: +start >= 27 && +start <= 28 && +end >= 33 && +end <= 34 && +start > 26,
+        detail: `select ${start} ${end} (expected inner if/elif/else ~28-33, NOT outer)`,
+      };
+    },
+  },
+  {
+    name: 'nested-outer-if-in-conditionals',
+    utterance: 'select the outer if statement',
+    cursorLine: 29, // inside priority if/elif/else
+    file: SAMPLE_FILES.pythonNested,
+    validate: (raw) => {
+      const m = raw.trim().toLowerCase().match(/^select\s+(\d+)\s+(\d+)/);
+      if (!m) return { pass: false, detail: `Expected select, got: ${raw.slice(0, 60)}` };
+      const [, start, end] = m;
+      // Outer if: type check spans lines 27-39
+      return {
+        pass: +start <= 27 && +end >= 39,
+        detail: `select ${start} ${end} (expected outer if/elif/else ~27-39)`,
+      };
+    },
+  },
+  {
+    name: 'nested-for-inside-elif',
+    utterance: 'select the for loop inside the elif',
+    cursorLine: 36, // inside the for sub loop (line 36 = if sub.get("active"))
+    file: SAMPLE_FILES.pythonNested,
+    validate: (raw) => {
+      const m = raw.trim().toLowerCase().match(/^select\s+(\d+)\s+(\d+)/);
+      if (!m) return { pass: false, detail: `Expected select, got: ${raw.slice(0, 60)}` };
+      const [, start, end] = m;
+      // for sub loop spans lines 35-37
+      return {
+        pass: +start <= 35 && +end >= 37 && +start >= 34,
+        detail: `select ${start} ${end} (expected for sub loop ~35-37)`,
+      };
+    },
+  },
+  {
+    name: 'nested-try-inside-method',
+    utterance: 'select the try block',
+    cursorLine: 52, // inside try body (self.results.append line)
+    file: SAMPLE_FILES.pythonNested,
+    validate: (raw) => {
+      const m = raw.trim().toLowerCase().match(/^select\s+(\d+)\s+(\d+)/);
+      if (!m) return { pass: false, detail: `Expected select, got: ${raw.slice(0, 60)}` };
+      const [, start, end] = m;
+      // try/except spans lines 49-59. Allow ±1 tolerance on end boundary.
+      return {
+        pass: +start <= 49 && +end >= 57,
+        detail: `select ${start} ${end} (expected try/except ~49-59)`,
+      };
+    },
+  },
+  {
+    name: 'nested-inner-for-in-try',
+    utterance: 'select the inner for loop',
+    cursorLine: 52, // inside for record loop within try
+    file: SAMPLE_FILES.pythonNested,
+    validate: (raw) => {
+      const m = raw.trim().toLowerCase().match(/^select\s+(\d+)\s+(\d+)/);
+      if (!m) return { pass: false, detail: `Expected select, got: ${raw.slice(0, 60)}` };
+      const [, start, end] = m;
+      // Inner for: for record in ds.get("records") spans lines 50-57
+      // Must NOT include outer for (line 48) or try (line 49)
+      return {
+        pass: +start >= 49 && +start <= 50 && +end >= 56 && +end <= 58,
+        detail: `select ${start} ${end} (expected inner for record loop ~50-57)`,
+      };
+    },
+  },
+  {
+    name: 'select-this-function-nested',
+    utterance: 'select this function',
+    cursorLine: 29, // deep inside nested_conditionals
+    file: SAMPLE_FILES.pythonNested,
+    validate: (raw) => {
+      const m = raw.trim().toLowerCase().match(/^select\s+(\d+)\s+(\d+)/);
+      if (!m) return { pass: false, detail: `Expected select, got: ${raw.slice(0, 60)}` };
+      const [, start, end] = m;
+      // nested_conditionals spans lines 23-40. Must include def header (23).
+      return {
+        pass: +start <= 23 && +end >= 40,
+        detail: `select ${start} ${end} (expected nested_conditionals ~23-40)`,
       };
     },
   },

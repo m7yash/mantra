@@ -513,7 +513,7 @@ GROQ_API_KEY=gsk_... npm run test:llm
 LLM_PROVIDER=cerebras CEREBRAS_API_KEY=csk_... npm run test:llm
 ```
 
-The test harness (`test-llm.mjs`) makes real API calls using the exact prompts from `package.json` against realistic code samples. It covers 60 scenarios: 27 selection model tests, 12 semantic go-to tests, and 21 router tests (across all 4 routing modes: with/without selection, with/without agent).
+The test harness (`test-llm.mjs`) makes real API calls using the exact prompts from `package.json` against realistic code samples. It covers 69 scenarios: 36 selection model tests (including 9 nested construct precision tests), 12 semantic go-to tests, and 21 router tests (across all 4 routing modes: with/without selection, with/without agent).
 
 ---
 

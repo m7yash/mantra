@@ -1796,7 +1796,13 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
               pushLog('command', phrase);
             }
           } else if (result.type === 'modification') {
-            if (!editor) {
+            // Double-check: modification should never reach here without a pre-existing selection.
+            // The safety net above should have converted it, but guard again just in case.
+            if (!hasPreExistingSelection) {
+              console.error('[Mantra] BUG: modification reached handler without pre-existing selection — blocking');
+              vscode.window.showWarningMessage('Code edit blocked: no text selected. Select text first, or use the agent.');
+              pushLog('error', 'Code edit blocked (no selection)');
+            } else if (!editor) {
               vscode.window.showWarningMessage('No active editor for modification.');
             } else if (result.selectionMode && !editor.selection.isEmpty) {
               // --- Selection mode: replace only the selected region ---
@@ -2455,8 +2461,14 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
           const phrase = (result.payload || '').toString().trim();
           const ok = await handleTextCommand(phrase, context) || await tryExecuteMappedCommand(phrase);
           pushLog('command', phrase);
-        } else if (result.type === 'modification' && editor) {
-          if (result.selectionMode && !editor.selection.isEmpty) {
+        } else if (result.type === 'modification') {
+          if (!hasPreExistingSelectionPtt) {
+            console.error('[Mantra] BUG: modification reached PTT handler without pre-existing selection — blocking');
+            vscode.window.showWarningMessage('Code edit blocked: no text selected. Select text first, or use the agent.');
+            pushLog('error', 'Code edit blocked (no selection)');
+          } else if (!editor) {
+            vscode.window.showWarningMessage('No active editor for modification.');
+          } else if (result.selectionMode && !editor.selection.isEmpty) {
             const sel = editor.selection;
             const startLine = sel.start.line;
             const endLine = sel.end.line;
